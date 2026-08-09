@@ -9,7 +9,7 @@ on:
         description: "O que executar"
         type: choice
         default: dry-run
-        options: [diagnostico, listar, dry-run, gravar]
+        options: [diagnostico, campos, listar, dry-run, gravar]
 
 concurrency:
   group: rd-vendas-sync
@@ -32,6 +32,7 @@ jobs:
         run: |
           case "${{ inputs.modo || 'gravar' }}" in
             diagnostico) python sync_rd_vendas.py --diagnostico ;;
+            campos)  python sync_rd_vendas.py --campos  ;;
             listar)  python sync_rd_vendas.py --listar  ;;
             dry-run) python sync_rd_vendas.py --dry-run ;;
             *)       python sync_rd_vendas.py           ;;
