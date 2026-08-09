@@ -89,6 +89,7 @@ def norm(v):
 # ─── RD Station ───────────────────────────────────────────────────────────────
 S = requests.Session()
 SAFETY_DAYS = int(os.environ.get("SAFETY_DAYS", "540"))
+LOOKBACK = int(os.environ.get("LOOKBACK_ROWS", "800"))   # 0 = ler a planilha inteira
 
 
 ESPERAS = [3, 8, 20, 45, 90]
@@ -307,18 +308,56 @@ def token():
     return r["access_token"]
 
 
+SESSAO = {"id": None}
+ESPERAS_G = [5, 12, 25, 45, 70, 100]
+
+
 def g(method, url, tk, **kw):
-    for tent in range(4):
-        r = requests.request(method, url, headers={"Authorization": f"Bearer {tk}",
-                                                   "Content-Type": "application/json"},
-                             timeout=120, **kw)
-        if r.status_code in (429, 503, 504):
-            time.sleep(int(r.headers.get("Retry-After", 2 ** tent)))
-            continue
-        if not r.ok:
-            raise RuntimeError(f"Graph {r.status_code}: {r.text[:400]}")
-        return r.json() if r.text else {}
-    raise RuntimeError("Graph: excesso de tentativas")
+    h = {"Authorization": f"Bearer {tk}", "Content-Type": "application/json"}
+    if SESSAO["id"] and "/workbook" in url:
+        h["workbook-session-id"] = SESSAO["id"]
+    ultimo = ""
+    for tent, espera in enumerate(ESPERAS_G):
+        try:
+            r = requests.request(method, url, headers=h, timeout=120, **kw)
+        except Exception as e:
+            ultimo = f"conexao: {e}"
+            log.warning("  Graph tentativa %s: %s — aguardando %ss", tent + 1, ultimo, espera)
+            time.sleep(espera); continue
+        if r.ok:
+            return r.json() if r.text else {}
+        ultimo = f"HTTP {r.status_code}: {r.text[:250]}"
+        if r.status_code in (429, 503, 504, 509):
+            ra = r.headers.get("Retry-After")
+            pausa = int(ra) if (ra or "").isdigit() else espera
+            log.warning("  Graph tentativa %s: %s | aguardando %ss", tent + 1, ultimo, pausa)
+            time.sleep(min(pausa, 120)); continue
+        if r.status_code in (409, 423):     # arquivo travado / conflito de escrita
+            log.warning("  Graph tentativa %s: %s | arquivo em uso, aguardando %ss",
+                        tent + 1, ultimo, espera)
+            time.sleep(espera); continue
+        raise RuntimeError(f"Graph {ultimo}")
+    raise RuntimeError(f"Graph: sem sucesso apos {len(ESPERAS_G)} tentativas. Ultima -> {ultimo}")
+
+
+def abrir_sessao(tk):
+    """Sessao persistente reduz throttling e mantem o recalculo consistente."""
+    try:
+        j = g("POST", f"{WB}/createSession", tk, json={"persistChanges": True})
+        SESSAO["id"] = j.get("id")
+        log.info("Sessao do workbook aberta")
+    except Exception as e:
+        log.warning("Sem sessao persistente (%s) — seguindo sem ela", str(e)[:120])
+
+
+def fechar_sessao(tk):
+    if not SESSAO["id"]:
+        return
+    try:
+        g("POST", f"{WB}/closeSession", tk)
+    except Exception:
+        pass
+    SESSAO["id"] = None
 
 
 def listar_drive(tk):
@@ -364,7 +403,11 @@ def ler_existentes(tk):
     ur = g("GET", f"{ws}/usedRange(valuesOnly=true)?$select=address,rowCount", tk)
     total = int(ur.get("rowCount") or 0)
     chaves, CH = set(), 2000
-    for ini in range(2, total + 1, CH):
+    inicio = 2
+    if LOOKBACK and total > LOOKBACK:
+        inicio = max(2, total - LOOKBACK + 1)
+        log.info("Lendo apenas as ultimas %s linhas (a partir da %s)", LOOKBACK, inicio)
+    for ini in range(inicio, total + 1, CH):
         fim = min(total, ini + CH - 1)
         rg = g("GET", f"{ws}/range(address='A{ini}:K{fim}')?$select=values", tk)
         for v in rg.get("values", []):
@@ -436,6 +479,7 @@ def main():
 
     tk = token()
     resolver_arquivo(tk)
+    abrir_sessao(tk)
     existentes, _ = ler_existentes(tk)
 
     inserir_agora, vistas = [], set()
@@ -452,6 +496,7 @@ def main():
     if DRYRUN:
         for l in inserir_agora[:20]:
             log.info("  DRY %s", l[:8])
+        fechar_sessao(tk)
         return
 
     modelo = formulas_modelo(tk)
@@ -460,6 +505,7 @@ def main():
         inserir(tk, bloco, modelo)
         log.info("  gravadas %s/%s", min(i + 20, len(inserir_agora)), len(inserir_agora))
 
+    fechar_sessao(tk)
     log.info("OK — %s linhas inseridas", len(inserir_agora))
 
 
