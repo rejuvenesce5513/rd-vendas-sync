@@ -130,25 +130,41 @@ def rd_get(params, tolerante=False):
 
 
 def diagnostico():
-    """Chamada minima para descobrir o estado real da API."""
-    import json as _j
-    for nome, par in [("basico", {"limit": 1}),
-                      ("pagina 1", {"limit": 200, "page": 1}),
-                      ("filtro periodo", {"limit": 1, "closed_at_period": "true",
-                                          "start_date": CUTOFF.isoformat(),
-                                          "end_date": dt.date.today().isoformat()})]:
-        p = dict(par); p["token"] = RD_TOKEN
+    """Testa combinacoes de parametros e mostra o closed_at real de cada negocio."""
+    hoje = dt.date.today()
+    amanha = (hoje + dt.timedelta(days=1)).isoformat()
+    ini = CUTOFF.isoformat()
+    testes = [
+        ("A base",              {"limit": 3}),
+        ("B win",               {"limit": 3, "win": "true"}),
+        ("C closed_period",     {"limit": 3, "closed_at_period": "true",
+                                 "start_date": ini, "end_date": amanha}),
+        ("D closed+win",        {"limit": 3, "closed_at_period": "true", "win": "true",
+                                 "start_date": ini, "end_date": amanha}),
+        ("E order closed_at",   {"limit": 3, "order_by": "closed_at", "direction": "desc"}),
+        ("F updated_period",    {"limit": 3, "updated_at_period": "true",
+                                 "start_date": ini, "end_date": amanha}),
+    ]
+    for nome, par in testes:
+        q = dict(par); q["token"] = RD_TOKEN
         try:
-            r = S.get(RD_URL, params=p, timeout=60)
-            corpo = r.text[:300].replace("\n", " ")
-            log.info("%-16s HTTP %s | %s", nome, r.status_code, corpo)
-            if r.ok:
-                d = _j.loads(r.text)
-                log.info("%-16s deals=%s total=%s next_page=%s", "", len(d.get("deals", [])),
-                         d.get("total"), bool(d.get("next_page")))
+            r = S.get(RD_URL, params=q, timeout=60)
         except Exception as e:
-            log.info("%-16s excecao: %s", nome, e)
-        time.sleep(2)
+            log.info("%-18s EXCECAO %s", nome, e); continue
+        if not r.ok:
+            log.info("%-18s HTTP %s | %s", nome, r.status_code, r.text[:160]); time.sleep(1.5); continue
+        try:
+            j = r.json()
+        except Exception:
+            log.info("%-18s HTTP 200 nao-JSON", nome); time.sleep(1.5); continue
+        ds = j.get("deals", [])
+        log.info("%-18s HTTP 200 | total=%s devolvidos=%s", nome, j.get("total"), len(ds))
+        for d in ds:
+            st = (d.get("deal_stage") or {}).get("name")
+            log.info("%-18s   %-28s closed_at=%-28s status=%-9s win=%-5s etapa=%s",
+                     "", str(d.get("name"))[:28], str(d.get("closed_at")),
+                     d.get("status"), d.get("win"), st)
+        time.sleep(1.5)
 
 
 def _fechou_apos_corte(d):
