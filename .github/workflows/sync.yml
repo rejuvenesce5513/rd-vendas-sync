@@ -1,0 +1,47 @@
+name: RD -> Vendas (SharePoint)
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "O que executar"
+        type: choice
+        default: dry-run
+        options: [listar, dry-run, gravar]
+
+concurrency:
+  group: rd-vendas-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Executar
+        run: |
+          case "${{ inputs.modo || 'gravar' }}" in
+            listar)  python sync_rd_vendas.py --listar  ;;
+            dry-run) python sync_rd_vendas.py --dry-run ;;
+            *)       python sync_rd_vendas.py           ;;
+          esac
+        env:
+          RD_TOKEN:              ${{ secrets.RD_TOKEN }}
+          AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET:   ${{ secrets.AZURE_CLIENT_SECRET }}
+          SHAREPOINT_DRIVE_ID:   ${{ secrets.SHAREPOINT_DRIVE_ID }}
+          SHAREPOINT_FILE_PATH:  "/VENDAS_E_CAMPANHA.xlsx"
+          CUTOFF_DATE:           "2026-08-09"
+          SHEET_NAME:            "Vendas"
+          TABLE_NAME:            "Tabela4"
