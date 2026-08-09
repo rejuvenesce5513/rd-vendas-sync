@@ -256,7 +256,8 @@ def elegivel(d):
 
 
 def linhas_do_deal(d):
-    """Uma linha por produto. Colunas A..K; L..O ficam None (sao formulas)."""
+    """UMA linha por negocio. Produtos concatenados por ', ' — mesmo padrao das
+    5.806 linhas existentes, de onde a formula da coluna L deriva TC/TEC/BH/etc."""
     fech = parse_dt(d.get("closed_at"))
     cria = parse_dt(d.get("created_at"))
     aval = parse_dt(cf_value(d, CF["data_avaliacao"]))
@@ -264,37 +265,44 @@ def linhas_do_deal(d):
     if not nome:
         cts = d.get("contacts") or []
         nome = (cts[0].get("name") if cts else "") or ""
-    fonte = (d.get("deal_source") or {}).get("name") or ""
-    resp = (d.get("user") or {}).get("name") or ""
-    meio = cf_value(d, CF["meio_avaliacao"]) or ""
-    avaliador = cf_value(d, CF["avaliador"]) or ""
-    etapa = (d.get("deal_stage") or {}).get("name") or "FECHAMENTO"
 
     prods = d.get("deal_products") or []
-    if not prods:
-        prods = [{"name": "", "total": d.get("amount_unique") or d.get("amount_total") or 0}]
-
-    out = []
+    nomes, soma = [], 0.0
     for p in prods:
+        n = (p.get("name") or "").strip()
+        if n:
+            nomes.append(n)
         try:
-            valor = float(p.get("total") or (float(p.get("price") or 0) * float(p.get("amount") or 1)))
+            soma += float(p.get("total") or
+                          (float(p.get("price") or 0) * float(p.get("amount") or 1)))
         except Exception:
-            valor = 0.0
-        out.append([
-            nome,                       # A Nome
-            etapa,                      # B Etapa
-            valor,                      # C Valor Único
-            serial(cria),               # D Data de criação
-            serial(fech),               # E Data de fechamento
-            fonte,                      # F Fonte
-            resp,                       # G Responsável
-            (p.get("name") or "").strip(),  # H Produtos
-            meio,                       # I Meio que Avaliação foi realizada:
-            avaliador,                  # J Avaliador
-            serial(aval),               # K MM/AAAA da Avaliação
-            None, None, None, None,     # L..O formulas
-        ])
-    return out
+            pass
+
+    valor = soma
+    if not valor:
+        for campo in ("amount_total", "amount_unique"):
+            try:
+                v = float(d.get(campo) or 0)
+            except Exception:
+                v = 0.0
+            if v:
+                valor = v
+                break
+
+    return [[
+        nome,                                                   # A Nome
+        (d.get("deal_stage") or {}).get("name") or "FECHAMENTO",  # B Etapa
+        valor,                                                  # C Valor Único
+        serial(cria),                                           # D Data de criação
+        serial(fech),                                           # E Data de fechamento
+        (d.get("deal_source") or {}).get("name") or "",         # F Fonte
+        (d.get("user") or {}).get("name") or "",                # G Responsável
+        ", ".join(nomes),                                       # H Produtos
+        cf_value(d, CF["meio_avaliacao"]) or "",                # I Meio da avaliação
+        cf_value(d, CF["avaliador"]) or "",                     # J Avaliador
+        serial(aval),                                           # K Data da avaliação
+        None, None, None, None,                                 # L..O formulas
+    ]]
 
 
 # ─── Microsoft Graph ──────────────────────────────────────────────────────────
@@ -472,7 +480,7 @@ def main():
     novas = []
     for d in elegiveis:
         novas.extend(linhas_do_deal(d))
-    log.info("Linhas candidatas (1 por produto): %s", len(novas))
+    log.info("Linhas candidatas (1 por negocio): %s", len(novas))
     if not novas:
         log.info("Nada a fazer.")
         return
