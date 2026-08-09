@@ -37,6 +37,7 @@ THREADS = int(os.environ.get("THREADS", "12"))
 DRYRUN  = "--dry-run" in sys.argv
 LISTAR  = "--listar" in sys.argv
 DIAG    = "--diagnostico" in sys.argv
+CAMPOS  = "--campos" in sys.argv
 
 RD_URL = "https://crm.rdstation.com/api/v1/deals"
 GRAPH  = "https://graph.microsoft.com/v1.0"
@@ -46,6 +47,7 @@ CF = {  # ids dos campos personalizados do RD
     "avaliador":      os.environ.get("CF_AVALIADOR",  "691b0d0ab5e2d0001db1085d"),
     "meio_avaliacao": os.environ.get("CF_MEIO",       "6740c07d840a380026d05b3e"),
     "data_avaliacao": os.environ.get("CF_DATA_AVAL",  "691e0f68034fef0015ca1a3f"),
+    "mes_avaliacao":  os.environ.get("CF_MES_AVAL",   "69a5a8dc76cd5b00139e5063"),
 }
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s",
@@ -61,17 +63,25 @@ def serial(d):
     return (d - EPOCH).days if d else None
 
 
-def parse_dt(s):
-    if not s:
+def parse_dt(v):
+    if v in (None, ""):
         return None
+    txt = str(v).strip()
     try:
-        return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).date()
+        return dt.datetime.fromisoformat(txt.replace("Z", "+00:00")).date()
     except Exception:
-        for f in ("%Y-%m-%d", "%d/%m/%Y"):
-            try:
-                return dt.datetime.strptime(str(s)[:10], f).date()
-            except Exception:
-                pass
+        pass
+    for f in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return dt.datetime.strptime(txt[:10], f).date()
+        except Exception:
+            pass
+    m = re.fullmatch(r"(\d{1,2})[/-](\d{4})", txt)          # MM/AAAA -> dia 1
+    if m:
+        return dt.date(int(m.group(2)), int(m.group(1)), 1)
+    m = re.fullmatch(r"(\d{4})[/-](\d{1,2})", txt)          # AAAA-MM -> dia 1
+    if m:
+        return dt.date(int(m.group(1)), int(m.group(2)), 1)
     return None
 
 
@@ -261,7 +271,9 @@ def linhas_do_deal(d):
     5.806 linhas existentes, de onde a formula da coluna L deriva TC/TEC/BH/etc."""
     fech = parse_dt(d.get("closed_at"))
     cria = parse_dt(d.get("created_at"))
-    aval = parse_dt(cf_value(d, CF["data_avaliacao"]))
+    aval = parse_dt(cf_value(d, CF["mes_avaliacao"])) or parse_dt(cf_value(d, CF["data_avaliacao"]))
+    if aval:
+        aval = aval.replace(day=1)
     nome = (d.get("name") or "").strip()
     if not nome:
         cts = d.get("contacts") or []
@@ -494,6 +506,15 @@ def inserir(tk, linhas, modelo):
 # ─── main ─────────────────────────────────────────────────────────────────────
 def main():
     log.info("Config: drive=%s... file_id=%s path=%s", DRIVE_ID[:12], FILE_ID or "(vazio)", FILE_PATH)
+    if CAMPOS:
+        for d in [x for x in buscar_deals() if elegivel(x)][:3]:
+            log.info("=== %s | fechado %s", d.get("name"), d.get("closed_at"))
+            for c in d.get("deal_custom_fields", []):
+                cid = c.get("custom_field_id") or (c.get("custom_field") or {}).get("_id")
+                lab = (c.get("custom_field") or {}).get("label") or c.get("label") or ""
+                log.info("    %-26s %-34s = %r", cid, lab[:34], c.get("value"))
+            log.info("    deal_products: %r", d.get("deal_products"))
+        return
     if DIAG:
         diagnostico()
         return
