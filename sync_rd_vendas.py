@@ -8,6 +8,7 @@ Colunas L:O sao formulas da planilha e sao replicadas em R1C1 (nunca sobrescrita
 """
 
 import os, sys, time, logging, datetime as dt
+import re
 import requests, msal
 
 # ─── configuracao (tudo via Secrets do GitHub) ────────────────────────────────
@@ -340,6 +341,15 @@ def g(method, url, tk, **kw):
             pausa = int(ra) if (ra or "").isdigit() else espera
             log.warning("  Graph tentativa %s: %s | aguardando %ss", tent + 1, ultimo, pausa)
             time.sleep(min(pausa, 120)); continue
+        if r.status_code == 400 and "InvalidSession" in r.text:
+            log.warning("  Graph tentativa %s: sessao expirou — reabrindo", tent + 1)
+            SESSAO["id"] = None
+            abrir_sessao(tk)
+            if SESSAO["id"]:
+                h["workbook-session-id"] = SESSAO["id"]
+            else:
+                h.pop("workbook-session-id", None)
+            time.sleep(2); continue
         if r.status_code in (409, 423):     # arquivo travado / conflito de escrita
             log.warning("  Graph tentativa %s: %s | arquivo em uso, aguardando %ss",
                         tent + 1, ultimo, espera)
@@ -446,19 +456,39 @@ def formulas_modelo(tk):
     return rg["formulasR1C1"][0]
 
 
+def fim_da_tabela(tk):
+    """Ultima linha da Tabela4 na planilha."""
+    rg = g("GET", f"{WB}/tables('{TABLE}')/range?$select=address,rowCount", tk)
+    addr = str(rg["address"]).split("!")[-1]
+    m = re.search(r"[A-Z]+(\d+):[A-Z]+(\d+)", addr)
+    return int(m.group(2))
+
+
 def inserir(tk, linhas, modelo):
-    """Adiciona na Tabela4 e replica as formulas L:O na linha nova."""
-    add = g("POST", f"{WB}/tables('{TABLE}')/rows/add", tk,
-            json={"index": None, "values": linhas})
-    idx = add.get("index")
-    if idx is None:
-        log.warning("rows/add nao devolveu index — formulas L:O nao replicadas")
-        return
-    primeira = idx + 2  # linha 1 = cabecalho
-    for i in range(len(linhas)):
-        r = primeira + i
-        g("PATCH", f"{WB}/worksheets('{SHEET}')/range(address='L{r}:O{r}')", tk,
-          json={"formulasR1C1": [modelo]})
+    """Escreve direto no intervalo logo abaixo da tabela.
+
+    Nao usa tables/rows/add: com 5.800+ linhas, formula volatil (TODAY) e tabelas
+    dinamicas, aquele endpoint estoura o gateway do Graph em 504. Escrita por
+    endereco e idempotente — repetir a chamada grava o mesmo valor, sem duplicar.
+    """
+    ultima = fim_da_tabela(tk)
+    ini, fim = ultima + 1, ultima + len(linhas)
+    ws = f"{WB}/worksheets('{SHEET}')"
+
+    valores = [l[:11] for l in linhas]                      # A..K
+    g("PATCH", f"{ws}/range(address='A{ini}:K{fim}')", tk, json={"values": valores})
+
+    if modelo:
+        g("PATCH", f"{ws}/range(address='L{ini}:O{fim}')", tk,
+          json={"formulasR1C1": [modelo for _ in linhas]})
+
+    nova_ultima = fim_da_tabela(tk)
+    if nova_ultima >= fim:
+        log.info("  linhas %s-%s gravadas e absorvidas pela %s", ini, fim, TABLE)
+    else:
+        log.warning("  linhas %s-%s gravadas, mas a %s ainda termina na %s — "
+                    "expanda a tabela manualmente (as tabelas dinamicas nao verao os dados)",
+                    ini, fim, TABLE, nova_ultima)
 
 
 # ─── main ─────────────────────────────────────────────────────────────────────
