@@ -1,0 +1,2 @@
+requests>=2.32
+msal>=1.28
