@@ -173,44 +173,44 @@ def _fechou_apos_corte(d):
 
 
 def estrategia_periodo():
-    """Filtra no servidor por periodo de fechamento. Valida se o RD respeitou."""
-    base = {"limit": 200, "closed_at_period": "true",
-            "start_date": CUTOFF.isoformat(),
-            "end_date": (dt.date.today() + dt.timedelta(days=1)).isoformat()}
+    """win=true + closed_at_period. O RD filtra em UTC, entao alargo 1 dia de cada lado
+    e reaplico o corte local em horario de Brasilia dentro de elegivel()."""
+    base = {"limit": 200, "win": "true", "closed_at_period": "true",
+            "start_date": (CUTOFF - dt.timedelta(days=1)).isoformat(),
+            "end_date": (dt.date.today() + dt.timedelta(days=2)).isoformat()}
     j = rd_get(dict(base, page=1), tolerante=True)
-    if not j:
+    if j is None:
         return None
-    primeira = j.get("deals", [])
-    if not primeira:
-        log.info("Filtro por periodo aceito — nenhum negocio no intervalo")
-        return []
-    fora = [d for d in primeira if not _fechou_apos_corte(d)]
-    if len(fora) > len(primeira) * 0.2:
-        log.info("RD ignorou o filtro de periodo (%s/%s fora do intervalo) — usando cursor",
-                 len(fora), len(primeira))
+    ds = j.get("deals", [])
+    if not ds:
+        log.warning("Filtro devolveu 0 ganhos no periodo — conferindo pelo cursor por seguranca")
         return None
-    log.info("Filtro por periodo aceito na origem")
-    todos, pag = list(primeira), 2
-    while len(primeira) == 200 and pag <= 50:
-        j = rd_get(dict(base, page=pag))
+    if not any(parse_dt(d.get("closed_at")) for d in ds):
+        log.info("closed_at veio vazio — filtro nao confiavel, usando cursor")
+        return None
+    log.info("Filtro na origem aceito (win + closed_at_period) — total=%s", j.get("total"))
+    todos, pag = list(ds), 2
+    while len(ds) == 200 and pag <= 50:
+        j = rd_get(dict(base, page=pag), tolerante=True)
         if not j:
             break
-        lote = j.get("deals", [])
-        todos.extend(lote)
-        if len(lote) < 200:
+        ds = j.get("deals", [])
+        todos.extend(ds)
+        if len(ds) < 200:
             break
         pag += 1
     return todos
 
 
 def estrategia_cursor():
-    """Percorre tudo com next_page. Sequencial, sem teto de 10 mil."""
+    """Percorre os negocios ganhos com next_page. Sem teto de 10 mil."""
+    log.info("Cursor: percorrendo negocios ganhos (win=true)")
     limite_criacao = CUTOFF - dt.timedelta(days=SAFETY_DAYS)
-    todos, params, n, secas = [], {"limit": 200}, 0, 0
+    todos, params, n, secas = [], {"limit": 200, "win": "true"}, 0, 0
     while n < 400:
         j = rd_get(params)
         if not j:
-            log.warning("RD devolveu 400 na pagina %s — interrompendo", n + 1)
+            log.warning("RD recusou na pagina %s — interrompendo", n + 1)
             break
         lote = j.get("deals", [])
         if not lote:
@@ -218,7 +218,7 @@ def estrategia_cursor():
         todos.extend(lote)
         n += 1
         criacoes = [parse_dt(d.get("created_at")) for d in lote]
-        if all(c and c < limite_criacao for c in criacoes if c):
+        if criacoes and all(c and c < limite_criacao for c in criacoes if c):
             secas += 1
             if secas >= 2:
                 log.info("Alcancado %s (corte - %s dias) — parando", limite_criacao, SAFETY_DAYS)
@@ -226,10 +226,10 @@ def estrategia_cursor():
         else:
             secas = 0
         nxt = j.get("next_page")
-        if not nxt:
+        if not nxt or not j.get("has_more"):
             break
-        params = {"limit": 200, "next_page": nxt}
-        if n % 20 == 0:
+        params = {"limit": 200, "win": "true", "next_page": nxt}
+        if n % 10 == 0:
             log.info("  %s paginas, %s negocios", n, len(todos))
     return todos
 
@@ -250,13 +250,13 @@ def elegivel(d):
         pid = (d.get("deal_pipeline") or {}).get("id") or (d.get("deal_pipeline") or {}).get("_id")
         if pid not in PIPES:
             return False
-    fech = parse_dt(d.get("closed_at") or d.get("updated_at"))
+    fech = parse_dt(d.get("closed_at"))
     return bool(fech and fech >= CUTOFF)
 
 
 def linhas_do_deal(d):
     """Uma linha por produto. Colunas A..K; L..O ficam None (sao formulas)."""
-    fech = parse_dt(d.get("closed_at") or d.get("updated_at"))
+    fech = parse_dt(d.get("closed_at"))
     cria = parse_dt(d.get("created_at"))
     aval = parse_dt(cf_value(d, CF["data_avaliacao"]))
     nome = (d.get("name") or "").strip()
