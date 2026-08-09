@@ -8,15 +8,21 @@ Colunas L:O sao formulas da planilha e sao replicadas em R1C1 (nunca sobrescrita
 """
 
 import os, sys, time, logging, datetime as dt
-from concurrent.futures import ThreadPoolExecutor
 import requests, msal
 
 # ─── configuracao (tudo via Secrets do GitHub) ────────────────────────────────
-RD_TOKEN      = os.environ["RD_TOKEN"]
-TENANT_ID     = os.environ["AZURE_TENANT_ID"]
-CLIENT_ID     = os.environ["AZURE_CLIENT_ID"]
-CLIENT_SECRET = os.environ["AZURE_CLIENT_SECRET"]
-DRIVE_ID      = os.environ["SHAREPOINT_DRIVE_ID"]
+_REQ = ["RD_TOKEN", "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "SHAREPOINT_DRIVE_ID"]
+_falta = [k for k in _REQ if not os.environ.get(k, "").strip()]
+if _falta:
+    print("ERRO: secrets ausentes ou vazios -> " + ", ".join(_falta))
+    print("Cadastre em Settings > Secrets and variables > Actions (nome exato, maiusculas).")
+    raise SystemExit(1)
+
+RD_TOKEN      = os.environ["RD_TOKEN"].strip()
+TENANT_ID     = os.environ["AZURE_TENANT_ID"].strip()
+CLIENT_ID     = os.environ["AZURE_CLIENT_ID"].strip()
+CLIENT_SECRET = os.environ["AZURE_CLIENT_SECRET"].strip()
+DRIVE_ID      = os.environ["SHAREPOINT_DRIVE_ID"].strip()
 FILE_ID       = os.environ.get("SHAREPOINT_FILE_ID", "").strip()
 FILE_PATH     = os.environ.get("SHAREPOINT_FILE_PATH", "/VENDAS_E_CAMPANHA.xlsx").strip()
 
@@ -81,42 +87,102 @@ def norm(v):
 
 # ─── RD Station ───────────────────────────────────────────────────────────────
 S = requests.Session()
+SAFETY_DAYS = int(os.environ.get("SAFETY_DAYS", "540"))
 
 
-def page(n):
+def rd_get(params):
+    """Uma chamada ao endpoint de negocios, com retry em 429/5xx."""
+    p = dict(params); p["token"] = RD_TOKEN
     for tent in range(4):
+        r = S.get(RD_URL, params=p, timeout=90)
+        if r.status_code == 429 or r.status_code >= 500:
+            time.sleep(2 ** tent); continue
+        if r.status_code in (401, 403):
+            raise SystemExit(f"ERRO RD: HTTP {r.status_code} — token invalido.\n{r.text[:300]}")
+        if r.status_code == 400:
+            return None                       # filtro nao aceito / limite de paginacao
+        if not r.ok:
+            raise SystemExit(f"ERRO RD: HTTP {r.status_code}\n{r.text[:300]}")
         try:
-            r = S.get(RD_URL, params={"token": RD_TOKEN, "page": n, "limit": 200}, timeout=60)
-            if r.status_code == 429:
-                time.sleep(2 ** tent)
-                continue
-            r.raise_for_status()
-            return r.json().get("deals", [])
-        except Exception as e:
-            if tent == 3:
-                raise
-            time.sleep(2 ** tent)
-    return []
+            return r.json()
+        except Exception:
+            raise SystemExit(f"ERRO RD: resposta nao-JSON\n{r.text[:300]}")
+    raise SystemExit("ERRO RD: excesso de tentativas (429/5xx)")
+
+
+def _fechou_apos_corte(d):
+    f = parse_dt(d.get("closed_at"))
+    return bool(f and f >= CUTOFF)
+
+
+def estrategia_periodo():
+    """Filtra no servidor por periodo de fechamento. Valida se o RD respeitou."""
+    base = {"limit": 200, "closed_at_period": "true",
+            "start_date": CUTOFF.isoformat(),
+            "end_date": (dt.date.today() + dt.timedelta(days=1)).isoformat()}
+    j = rd_get(dict(base, page=1))
+    if not j:
+        return None
+    primeira = j.get("deals", [])
+    if not primeira:
+        log.info("Filtro por periodo aceito — nenhum negocio no intervalo")
+        return []
+    fora = [d for d in primeira if not _fechou_apos_corte(d)]
+    if len(fora) > len(primeira) * 0.2:
+        log.info("RD ignorou o filtro de periodo (%s/%s fora do intervalo) — usando cursor",
+                 len(fora), len(primeira))
+        return None
+    log.info("Filtro por periodo aceito na origem")
+    todos, pag = list(primeira), 2
+    while len(primeira) == 200 and pag <= 50:
+        j = rd_get(dict(base, page=pag))
+        if not j:
+            break
+        lote = j.get("deals", [])
+        todos.extend(lote)
+        if len(lote) < 200:
+            break
+        pag += 1
+    return todos
+
+
+def estrategia_cursor():
+    """Percorre tudo com next_page. Sequencial, sem teto de 10 mil."""
+    limite_criacao = CUTOFF - dt.timedelta(days=SAFETY_DAYS)
+    todos, params, n, secas = [], {"limit": 200}, 0, 0
+    while n < 400:
+        j = rd_get(params)
+        if not j:
+            log.warning("RD devolveu 400 na pagina %s — interrompendo", n + 1)
+            break
+        lote = j.get("deals", [])
+        if not lote:
+            break
+        todos.extend(lote)
+        n += 1
+        criacoes = [parse_dt(d.get("created_at")) for d in lote]
+        if all(c and c < limite_criacao for c in criacoes if c):
+            secas += 1
+            if secas >= 2:
+                log.info("Alcancado %s (corte - %s dias) — parando", limite_criacao, SAFETY_DAYS)
+                break
+        else:
+            secas = 0
+        nxt = j.get("next_page")
+        if not nxt:
+            break
+        params = {"limit": 200, "next_page": nxt}
+        if n % 20 == 0:
+            log.info("  %s paginas, %s negocios", n, len(todos))
+    return todos
 
 
 def buscar_deals():
-    """Pagina ate o fim. A API do RD ignora filtros de pipeline/data em query."""
-    todos, n, vazias = [], 1, 0
-    while n <= MAXPAG:
-        lote = list(range(n, min(n + THREADS, MAXPAG + 1)))
-        with ThreadPoolExecutor(max_workers=THREADS) as ex:
-            res = list(ex.map(page, lote))
-        for r in res:
-            todos.extend(r)
-        if any(len(r) == 0 for r in res):
-            vazias += 1
-            if vazias >= 1:
-                break
-        n += THREADS
-        if n % 60 == 1:
-            log.info("  %s paginas, %s negocios", n - 1, len(todos))
-    log.info("RD: %s negocios lidos", len(todos))
-    return todos
+    deals = estrategia_periodo()
+    if deals is None:
+        deals = estrategia_cursor()
+    log.info("RD: %s negocios lidos", len(deals))
+    return deals
 
 
 def elegivel(d):
@@ -289,6 +355,7 @@ def inserir(tk, linhas, modelo):
 
 # ─── main ─────────────────────────────────────────────────────────────────────
 def main():
+    log.info("Config: drive=%s... file_id=%s path=%s", DRIVE_ID[:12], FILE_ID or "(vazio)", FILE_PATH)
     if LISTAR:
         listar_drive(token())
         return
