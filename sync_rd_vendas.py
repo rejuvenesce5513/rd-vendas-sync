@@ -432,7 +432,7 @@ def ler_existentes(tk):
     ws = f"{WB}/worksheets('{SHEET}')"
     ur = g("GET", f"{ws}/usedRange(valuesOnly=true)?$select=address,rowCount", tk)
     total = int(ur.get("rowCount") or 0)
-    chaves, CH = set(), 2000
+    mapa, CH = {}, 2000
     inicio = 2
     if LOOKBACK and total > LOOKBACK:
         inicio = max(2, total - LOOKBACK + 1)
@@ -440,26 +440,34 @@ def ler_existentes(tk):
     for ini in range(inicio, total + 1, CH):
         fim = min(total, ini + CH - 1)
         rg = g("GET", f"{ws}/range(address='A{ini}:K{fim}')?$select=values", tk)
-        for v in rg.get("values", []):
-            chaves.add(chave(v))
-    chaves.discard(None)
+        for j, v in enumerate(rg.get("values", [])):
+            sk = softkey(v)
+            if sk:
+                mapa[sk] = (ini + j, valor_de(v))
     log.info("Planilha: %s linhas lidas", total - 1)
-    return chaves, total
+    return mapa, total
 
 
-def chave(v):
-    """Nome | data fechamento | valor | produto — so para linhas a partir do CUTOFF."""
+def softkey(v):
+    """Nome | data de fechamento | produtos — sem o valor, para permitir correcao.
+    So considera linhas a partir do CUTOFF."""
     try:
         e = v[4]
         if e in (None, ""):
             return None
-        d = EPOCH + dt.timedelta(days=int(float(e)))
+        d = e if isinstance(e, dt.date) else EPOCH + dt.timedelta(days=int(float(e)))
         if d < CUTOFF:
             return None
-        val = round(float(v[2] or 0), 2)
-        return f"{norm(v[0])}|{d.isoformat()}|{val}|{norm(v[7])}"
+        return f"{norm(v[0])}|{d.isoformat()}|{norm(v[7])}"
     except Exception:
         return None
+
+
+def valor_de(v):
+    try:
+        return round(float(v[2] or 0), 2)
+    except Exception:
+        return 0.0
 
 
 def formulas_modelo(tk):
@@ -541,16 +549,32 @@ def main():
     abrir_sessao(tk)
     existentes, _ = ler_existentes(tk)
 
-    inserir_agora, vistas = [], set()
+    inserir_agora, corrigir, vistas = [], [], set()
     for l in novas:
-        k = chave(l)
-        if k is None or k in existentes or k in vistas:
+        sk = softkey(l)
+        if sk is None or sk in vistas:
             continue
-        vistas.add(k)
+        vistas.add(sk)
+        if sk in existentes:
+            linha, val_atual = existentes[sk]
+            if abs(valor_de(l) - val_atual) > 0.005:
+                corrigir.append((linha, valor_de(l), val_atual, l[0]))
+            continue
         inserir_agora.append(l)
 
-    log.info("Novas apos deduplicacao: %s", len(inserir_agora))
+    log.info("Novas: %s | correcoes de valor: %s", len(inserir_agora), len(corrigir))
+
+    if corrigir and not DRYRUN:
+        ws = f"{WB}/worksheets('{SHEET}')"
+        for linha, novo_v, antigo, nome in corrigir:
+            g("PATCH", f"{ws}/range(address='C{linha}')", tk, json={"values": [[novo_v]]})
+            log.info("  linha %s (%s): %s -> %s", linha, str(nome)[:28], antigo, novo_v)
+    elif corrigir:
+        for linha, novo_v, antigo, nome in corrigir:
+            log.info("  DRY corrigiria linha %s (%s): %s -> %s", linha, str(nome)[:28], antigo, novo_v)
+
     if not inserir_agora:
+        fechar_sessao(tk)
         return
     if DRYRUN:
         for l in inserir_agora[:20]:
