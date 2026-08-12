@@ -315,6 +315,7 @@ def linhas_do_deal(d):
         cf_value(d, CF["avaliador"]) or "",                     # J Avaliador
         serial(aval),                                           # K Data da avaliação
         None, None, None, None,                                 # L..O formulas
+        str(d.get("id") or d.get("_id") or ""),                 # P ID RD
     ]]
 
 
@@ -432,20 +433,27 @@ def ler_existentes(tk):
     ws = f"{WB}/worksheets('{SHEET}')"
     ur = g("GET", f"{ws}/usedRange(valuesOnly=true)?$select=address,rowCount", tk)
     total = int(ur.get("rowCount") or 0)
-    mapa, CH = {}, 2000
+    mapa, por_id, por_dvp, CH = {}, {}, {}, 2000
     inicio = 2
     if LOOKBACK and total > LOOKBACK:
         inicio = max(2, total - LOOKBACK + 1)
         log.info("Lendo apenas as ultimas %s linhas (a partir da %s)", LOOKBACK, inicio)
     for ini in range(inicio, total + 1, CH):
         fim = min(total, ini + CH - 1)
-        rg = g("GET", f"{ws}/range(address='A{ini}:K{fim}')?$select=values", tk)
+        rg = g("GET", f"{ws}/range(address='A{ini}:P{fim}')?$select=values", tk)
         for j, v in enumerate(rg.get("values", [])):
+            linha = ini + j
+            rid = str(v[15]).strip() if len(v) > 15 and v[15] not in (None, "") else ""
             sk = softkey(v)
+            if rid:
+                por_id[rid] = (linha, v)
             if sk:
-                mapa[sk] = (ini + j, valor_de(v))
-    log.info("Planilha: %s linhas lidas", total - 1)
-    return mapa, total
+                mapa[sk] = (linha, v)
+            k3 = chave_sem_nome(v)
+            if k3:
+                por_dvp.setdefault(k3, []).append((linha, v))
+    log.info("Planilha: %s linhas lidas | %s com ID RD", total - 1, len(por_id))
+    return mapa, por_id, por_dvp, total
 
 
 def softkey(v):
@@ -459,6 +467,20 @@ def softkey(v):
         if d < CUTOFF:
             return None
         return f"{norm(v[0])}|{d.isoformat()}|{norm(v[7])}"
+    except Exception:
+        return None
+
+
+def chave_sem_nome(v):
+    """Fechamento | valor | produtos | responsavel — casa negocios renomeados."""
+    try:
+        e = v[4]
+        if e in (None, ""):
+            return None
+        d = e if isinstance(e, dt.date) else EPOCH + dt.timedelta(days=int(float(e)))
+        if d < CUTOFF:
+            return None
+        return f"{d.isoformat()}|{round(float(v[2] or 0), 2)}|{norm(v[7])}|{norm(v[6])}"
     except Exception:
         return None
 
@@ -497,6 +519,10 @@ def inserir(tk, linhas, modelo):
 
     valores = [l[:11] for l in linhas]                      # A..K
     g("PATCH", f"{ws}/range(address='A{ini}:K{fim}')", tk, json={"values": valores})
+
+    ids = [[l[15]] for l in linhas]                          # P — ID da negociacao no RD
+    if any(x[0] for x in ids):
+        g("PATCH", f"{ws}/range(address='P{ini}:P{fim}')", tk, json={"values": ids})
 
     if modelo:
         g("PATCH", f"{ws}/range(address='L{ini}:O{fim}')", tk,
@@ -547,31 +573,71 @@ def main():
     tk = token()
     resolver_arquivo(tk)
     abrir_sessao(tk)
-    existentes, _ = ler_existentes(tk)
+    existentes, por_id, por_dvp, _ = ler_existentes(tk)
 
-    inserir_agora, corrigir, vistas = [], [], set()
+    def igual(a, b):
+        if isinstance(a, (int, float)) or isinstance(b, (int, float)):
+            try:
+                return abs(float(a or 0) - float(b or 0)) <= 0.005
+            except Exception:
+                pass
+        return norm(a) == norm(b)
+
+    inserir_agora, atualizar, vistas = [], [], set()
     for l in novas:
-        sk = softkey(l)
-        if sk is None or sk in vistas:
+        rid = l[15]
+        if rid and rid in vistas:
             continue
-        vistas.add(sk)
-        if sk in existentes:
-            linha, val_atual = existentes[sk]
-            if abs(valor_de(l) - val_atual) > 0.005:
-                corrigir.append((linha, valor_de(l), val_atual, l[0]))
+        vistas.add(rid)
+
+        alvo = por_id.get(rid)
+        origem = "id"
+        if alvo is None:                       # linha antiga, ainda sem ID gravado
+            sk = softkey(l)
+            if sk and sk in existentes:
+                alvo = existentes[sk]
+                origem = "chave"
+
+        if alvo is None:                       # negocio renomeado no RD
+            k3 = chave_sem_nome(l)
+            cands = [c for c in por_dvp.get(k3, [])
+                     if not (len(c[1]) > 15 and str(c[1][15]).strip())]
+            if len(cands) == 1:
+                alvo = cands[0]
+                origem = "renomeado"
+            elif len(cands) > 1:
+                log.warning("  %s: %s linhas candidatas com mesma data/valor/produto — inserindo nova",
+                            str(l[0])[:40], len(cands))
+
+        if alvo is None:
+            inserir_agora.append(l)
             continue
-        inserir_agora.append(l)
 
-    log.info("Novas: %s | correcoes de valor: %s", len(inserir_agora), len(corrigir))
+        linha, atual = alvo
+        dif = [i for i in range(11)
+               if not igual(l[i], atual[i] if i < len(atual) else None)]
+        falta_id = origem in ("chave", "renomeado") or not (len(atual) > 15 and str(atual[15]).strip())
+        if dif or falta_id:
+            atualizar.append((linha, l, dif, falta_id, origem))
 
-    if corrigir and not DRYRUN:
-        ws = f"{WB}/worksheets('{SHEET}')"
-        for linha, novo_v, antigo, nome in corrigir:
-            g("PATCH", f"{ws}/range(address='C{linha}')", tk, json={"values": [[novo_v]]})
-            log.info("  linha %s (%s): %s -> %s", linha, str(nome)[:28], antigo, novo_v)
-    elif corrigir:
-        for linha, novo_v, antigo, nome in corrigir:
-            log.info("  DRY corrigiria linha %s (%s): %s -> %s", linha, str(nome)[:28], antigo, novo_v)
+    log.info("Novas: %s | atualizacoes: %s", len(inserir_agora), len(atualizar))
+
+    COLS = ["Nome", "Etapa", "Valor", "Criacao", "Fechamento", "Fonte",
+            "Responsavel", "Produtos", "Meio", "Avaliador", "MesAval"]
+    ws = f"{WB}/worksheets('{SHEET}')"
+    for linha, l, dif, falta_id, origem in atualizar:
+        campos = ", ".join(COLS[i] for i in dif) or "-"
+        if DRYRUN:
+            log.info("  DRY linha %s [%s] (%s): %s%s", linha, origem, str(l[0])[:26], campos,
+                     " +ID" if falta_id else "")
+            continue
+        if dif:
+            g("PATCH", f"{ws}/range(address='A{linha}:K{linha}')", tk,
+              json={"values": [l[:11]]})
+        if falta_id:
+            g("PATCH", f"{ws}/range(address='P{linha}')", tk, json={"values": [[l[15]]]})
+        log.info("  linha %s [%s] (%s): %s%s", linha, origem, str(l[0])[:26], campos,
+                 " +ID" if falta_id else "")
 
     if not inserir_agora:
         fechar_sessao(tk)
