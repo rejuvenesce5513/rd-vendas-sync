@@ -614,19 +614,40 @@ def main():
             continue
 
         linha, atual = alvo
-        dif = [i for i in range(11)
-               if not igual(l[i], atual[i] if i < len(atual) else None)]
+
+        def vazio(x):
+            return x is None or (isinstance(x, str) and not x.strip())
+
+        dif = []
+        for i in range(11):
+            cur = atual[i] if i < len(atual) else None
+            if igual(l[i], cur):
+                continue
+            if vazio(l[i]) and not vazio(cur):
+                continue            # RD sem dado nao apaga o que ja existe
+            dif.append(i)
+        for i in range(11):
+            if i not in dif:
+                l[i] = atual[i] if i < len(atual) else l[i]
         falta_id = origem in ("chave", "renomeado") or not (len(atual) > 15 and str(atual[15]).strip())
         if dif or falta_id:
-            atualizar.append((linha, l, dif, falta_id, origem))
+            atualizar.append((linha, l, dif, falta_id, origem, list(atual)))
 
     log.info("Novas: %s | atualizacoes: %s", len(inserir_agora), len(atualizar))
 
     COLS = ["Nome", "Etapa", "Valor", "Criacao", "Fechamento", "Fonte",
             "Responsavel", "Produtos", "Meio", "Avaliador", "MesAval"]
     ws = f"{WB}/worksheets('{SHEET}')"
-    for linha, l, dif, falta_id, origem in atualizar:
-        campos = ", ".join(COLS[i] for i in dif) or "-"
+    def mostra(x):
+        if x is None or x == "":
+            return "(vazio)"
+        if isinstance(x, (int, float)) and 20000 < float(x) < 80000:
+            return (EPOCH + dt.timedelta(days=int(float(x)))).strftime("%d/%m/%Y")
+        return str(x)[:30]
+
+    for linha, l, dif, falta_id, origem, antes in atualizar:
+        campos = ", ".join(f"{COLS[i]}: {mostra(antes[i] if i < len(antes) else None)} -> {mostra(l[i])}"
+                           for i in dif) or "-"
         if DRYRUN:
             log.info("  DRY linha %s [%s] (%s): %s%s", linha, origem, str(l[0])[:26], campos,
                      " +ID" if falta_id else "")
