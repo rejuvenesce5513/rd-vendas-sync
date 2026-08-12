@@ -53,7 +53,6 @@ jobs:
           SHAREPOINT_DRIVE_ID:   ${{ secrets.SHAREPOINT_DRIVE_ID }}
           SHAREPOINT_FILE_ID:    "01EBFAZOLX726YDHARANGY3U4R7G5H23HP"
           CUTOFF_DATE:           "2026-08-01"
-          LOOKBACK_ROWS:         "0"
           SHEET_NAME:            "Vendas"
           TABLE_NAME:            "Tabela4"
-          LOOKBACK_ROWS:         "800"
+          LOOKBACK_ROWS:         "0"
