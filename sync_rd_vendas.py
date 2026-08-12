@@ -9,6 +9,7 @@ Colunas L:O sao formulas da planilha e sao replicadas em R1C1 (nunca sobrescrita
 
 import os, sys, time, logging, datetime as dt
 import re
+import unicodedata
 import requests, msal
 
 # ─── configuracao (tudo via Secrets do GitHub) ────────────────────────────────
@@ -30,7 +31,7 @@ FILE_PATH     = os.environ.get("SHAREPOINT_FILE_PATH", "/VENDAS_E_CAMPANHA.xlsx"
 SHEET   = os.environ.get("SHEET_NAME", "Vendas")
 TABLE   = os.environ.get("TABLE_NAME", "Tabela4")
 CUTOFF  = dt.date.fromisoformat(os.environ.get("CUTOFF_DATE", "2026-08-09"))
-STAGE   = os.environ.get("STAGE_MATCH", "FECHAMENTO").upper()
+STAGE_MATCH = os.environ.get("STAGE_MATCH", "FECHAMENTO,REVISAO DE PENDENCIAS")
 PIPES   = [p.strip() for p in os.environ.get("PIPELINE_IDS", "").split(",") if p.strip()]
 MAXPAG  = int(os.environ.get("MAX_PAGES", "250"))
 THREADS = int(os.environ.get("THREADS", "12"))
@@ -94,7 +95,12 @@ def cf_value(deal, field_id):
 
 
 def norm(v):
-    return str(v).strip().upper() if v is not None else ""
+    """Maiusculas, sem acento, espacos colapsados — comparacao tolerante."""
+    if v is None:
+        return ""
+    t = unicodedata.normalize("NFD", str(v))
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    return re.sub(r"\s+", " ", t).strip().upper()
 
 
 # ─── RD Station ───────────────────────────────────────────────────────────────
@@ -158,6 +164,19 @@ def diagnostico():
         ("F updated_period",    {"limit": 3, "updated_at_period": "true",
                                  "start_date": ini, "end_date": amanha}),
     ]
+    for rot, par in [("etapas com win", {"limit": 200, "win": "true"}),
+                     ("etapas sem win", {"limit": 200})]:
+        q = dict(par); q["token"] = RD_TOKEN
+        try:
+            j = S.get(RD_URL, params=q, timeout=60).json()
+        except Exception as e:
+            log.info("%-18s excecao %s", rot, e); continue
+        c = {}
+        for d in j.get("deals", []):
+            k = (d.get("deal_stage") or {}).get("name") or "(sem etapa)"
+            c[k] = c.get(k, 0) + 1
+        log.info("%-18s %s", rot, ", ".join(f"{k}={v}" for k, v in sorted(c.items(), key=lambda x: -x[1])))
+        time.sleep(1.5)
     for nome, par in testes:
         q = dict(par); q["token"] = RD_TOKEN
         try:
@@ -255,9 +274,27 @@ def buscar_deals():
     return deals
 
 
+def nome_etapa(d):
+    return (d.get("deal_stage") or {}).get("name") or ""
+
+
+_STAGES = None
+
+
+def etapas_venda():
+    global _STAGES
+    if _STAGES is None:
+        _STAGES = [norm(x) for x in STAGE_MATCH.split(",") if x.strip()]
+    return _STAGES
+
+
+def etapa_de_venda(d):
+    n = norm(nome_etapa(d))
+    return any(t in n for t in etapas_venda())
+
+
 def elegivel(d):
-    st = d.get("deal_stage") or {}
-    if STAGE not in norm(st.get("name")) and norm(st.get("nickname")) != "F":
+    if not etapa_de_venda(d):
         return False
     if PIPES:
         pid = (d.get("deal_pipeline") or {}).get("id") or (d.get("deal_pipeline") or {}).get("_id")
@@ -638,6 +675,15 @@ def main():
         log.warning("Atualizacoes pendentes: %s — processando %s agora, resto no proximo ciclo",
                     len(atualizar), MAX_UPD)
         atualizar = atualizar[:MAX_UPD]
+    ids_rd = {l[15] for l in novas if l[15]}
+    sumidas = [(lin, v[0]) for rid, (lin, v) in por_id.items() if rid and rid not in ids_rd]
+    if sumidas:
+        log.warning("ATENCAO: %s linha(s) com ID que nao aparecem mais como venda no RD "
+                    "(revertida, perdida ou fora das etapas configuradas) — revise manualmente:",
+                    len(sumidas))
+        for lin, nome in sumidas[:25]:
+            log.warning("   linha %s — %s", lin, str(nome)[:40])
+
     log.info("Novas: %s | atualizacoes: %s", len(inserir_agora), len(atualizar))
 
     COLS = ["Nome", "Etapa", "Valor", "Criacao", "Fechamento", "Fonte",
