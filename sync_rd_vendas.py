@@ -101,6 +101,7 @@ def norm(v):
 S = requests.Session()
 SAFETY_DAYS = int(os.environ.get("SAFETY_DAYS", "540"))
 LOOKBACK = int(os.environ.get("LOOKBACK_ROWS", "800"))   # 0 = ler a planilha inteira
+MAX_UPD  = int(os.environ.get("MAX_UPDATES", "60"))      # teto por execucao; o resto vai no proximo ciclo
 
 
 ESPERAS = [3, 8, 20, 45, 90]
@@ -633,6 +634,10 @@ def main():
         if dif or falta_id:
             atualizar.append((linha, l, dif, falta_id, origem, list(atual)))
 
+    if MAX_UPD and len(atualizar) > MAX_UPD:
+        log.warning("Atualizacoes pendentes: %s — processando %s agora, resto no proximo ciclo",
+                    len(atualizar), MAX_UPD)
+        atualizar = atualizar[:MAX_UPD]
     log.info("Novas: %s | atualizacoes: %s", len(inserir_agora), len(atualizar))
 
     COLS = ["Nome", "Etapa", "Valor", "Criacao", "Fechamento", "Fonte",
