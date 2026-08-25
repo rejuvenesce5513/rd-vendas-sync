@@ -107,7 +107,8 @@ def norm(v):
 S = requests.Session()
 SAFETY_DAYS = int(os.environ.get("SAFETY_DAYS", "540"))
 LOOKBACK = int(os.environ.get("LOOKBACK_ROWS", "800"))   # 0 = ler a planilha inteira
-MAX_UPD  = int(os.environ.get("MAX_UPDATES", "60"))      # teto por execucao; o resto vai no proximo ciclo
+MAX_UPD  = int(os.environ.get("MAX_UPDATES", "60"))
+MARCAR_REV = os.environ.get("MARCAR_REVERTIDAS", "1") not in ("0", "false", "")      # teto por execucao; o resto vai no proximo ciclo
 
 
 ESPERAS = [3, 8, 20, 45, 90]
@@ -264,6 +265,26 @@ def estrategia_cursor():
         if n % 10 == 0:
             log.info("  %s paginas, %s negocios", n, len(todos))
     return todos
+
+
+def buscar_deal(did):
+    """Consulta um negocio pelo id. Devolve dict, "404" ou None se nao conseguiu."""
+    for tent, espera in enumerate(ESPERAS):
+        try:
+            r = S.get(f"{RD_URL}/{did}", params={"token": RD_TOKEN}, timeout=60)
+        except Exception:
+            time.sleep(espera); continue
+        if r.status_code == 404:
+            return "404"
+        if r.ok:
+            try:
+                return r.json()
+            except Exception:
+                return None
+        if r.status_code in (429, 500, 502, 503, 504):
+            time.sleep(espera); continue
+        return None
+    return None
 
 
 def buscar_deals():
@@ -676,13 +697,34 @@ def main():
                     len(atualizar), MAX_UPD)
         atualizar = atualizar[:MAX_UPD]
     ids_rd = {l[15] for l in novas if l[15]}
-    sumidas = [(lin, v[0]) for rid, (lin, v) in por_id.items() if rid and rid not in ids_rd]
-    if sumidas:
-        log.warning("ATENCAO: %s linha(s) com ID que nao aparecem mais como venda no RD "
-                    "(revertida, perdida ou fora das etapas configuradas) — revise manualmente:",
-                    len(sumidas))
-        for lin, nome in sumidas[:25]:
-            log.warning("   linha %s — %s", lin, str(nome)[:40])
+    candidatas = [(rid, lin, v) for rid, (lin, v) in por_id.items()
+                  if rid and rid not in ids_rd
+                  and any(t in norm(v[1] if len(v) > 1 else "") for t in etapas_venda())]
+    if candidatas:
+        log.info("Conferindo no RD %s linha(s) que sumiram da consulta...", len(candidatas))
+    revertidas = []
+    for rid, lin, v in candidatas[:40]:
+        d = buscar_deal(rid)
+        if d is None:
+            log.warning("   linha %s (%s): nao consegui verificar no RD — mantida",
+                        lin, str(v[0])[:34])
+            continue
+        if d == "404":
+            revertidas.append((lin, v[0], "EXCLUIDO NO RD"))
+            continue
+        if d.get("win") is False or not etapa_de_venda(d):
+            revertidas.append((lin, v[0], (nome_etapa(d) or "REVERTIDO NO RD").upper()))
+        # caso contrario continua sendo venda (data mudou, etc) — nao mexe
+
+    if revertidas:
+        log.warning("%s venda(s) deixaram de valer no RD:", len(revertidas))
+        ws2 = f"{WB}/worksheets('{SHEET}')"
+        for lin, nome, novo_st in revertidas:
+            if DRYRUN or not MARCAR_REV:
+                log.warning("   DRY linha %s (%s) -> Etapa '%s'", lin, str(nome)[:34], novo_st)
+            else:
+                g("PATCH", f"{ws2}/range(address='B{lin}')", tk, json={"values": [[novo_st]]})
+                log.warning("   linha %s (%s) -> Etapa '%s' — fora do total", lin, str(nome)[:34], novo_st)
 
     log.info("Novas: %s | atualizacoes: %s", len(inserir_agora), len(atualizar))
 
