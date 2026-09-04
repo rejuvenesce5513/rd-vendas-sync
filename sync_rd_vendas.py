@@ -742,7 +742,10 @@ def main():
         if d == "404":
             revertidas.append((lin, v[0], "EXCLUIDO NO RD"))
             continue
-        if d.get("win") is False or not etapa_de_venda(d):
+        if d.get("win") is False:
+            # perdido: nunca gravar o nome da etapa, que pode ser uma etapa de venda
+            revertidas.append((lin, v[0], "PERDIDO"))
+        elif not etapa_de_venda(d):
             revertidas.append((lin, v[0], (nome_etapa(d) or "REVERTIDO NO RD").upper()))
         # caso contrario continua sendo venda (data mudou, etc) — nao mexe
 
