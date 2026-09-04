@@ -49,6 +49,8 @@ CF = {  # ids dos campos personalizados do RD
     "meio_avaliacao": os.environ.get("CF_MEIO",       "6740c07d840a380026d05b3e"),
     "data_avaliacao": os.environ.get("CF_DATA_AVAL",  "691e0f68034fef0015ca1a3f"),
     "mes_avaliacao":  os.environ.get("CF_MES_AVAL",   "69a5a8dc76cd5b00139e5063"),
+    "data_cirurgia":  os.environ.get("CF_DATA_CIR",   "691621537df794001c2666ae"),
+    "cirurgia_marcada": os.environ.get("CF_CIR_MARC", "6932c2a93aa1e5001318f8c7"),
 }
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s",
@@ -56,6 +58,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(me
 log = logging.getLogger("sync")
 
 EPOCH = dt.date(1899, 12, 30)
+def _idx(letra):
+    n = 0
+    for ch in letra.strip().upper():
+        n = n * 26 + ord(ch) - 64
+    return n - 1
+
+
+COL_ID_L   = os.environ.get("COL_ID", "N").strip().upper()
+COL_CIR_L  = os.environ.get("COL_CIRURGIA", "O").strip().upper()
+COL_MARC_L = os.environ.get("COL_CIR_MARCADA", "P").strip().upper()
+LER_ATE    = os.environ.get("LER_ATE", "P").strip().upper()
+FORMULAS   = [tuple(x.split(":")) for x in
+              os.environ.get("FORMULA_RANGES", "L:M,Q:X").split(",") if ":" in x]
+
+I_ID, I_CIR, I_MARC = _idx(COL_ID_L), _idx(COL_CIR_L), _idx(COL_MARC_L)
+LARGURA = max(I_ID, I_CIR, I_MARC) + 1
+IDX_CMP = list(range(11)) + [I_CIR, I_MARC]
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -361,7 +380,7 @@ def linhas_do_deal(d):
                 valor = v
                 break
 
-    return [[
+    base = [
         nome,                                                   # A Nome
         (d.get("deal_stage") or {}).get("name") or "FECHAMENTO",  # B Etapa
         valor,                                                  # C Valor Único
@@ -373,9 +392,12 @@ def linhas_do_deal(d):
         cf_value(d, CF["meio_avaliacao"]) or "",                # I Meio da avaliação
         cf_value(d, CF["avaliador"]) or "",                     # J Avaliador
         serial(aval),                                           # K Data da avaliação
-        None, None, None, None,                                 # L..O formulas
-        str(d.get("id") or d.get("_id") or ""),                 # P ID RD
-    ]]
+    ]
+    linha = base + [None] * (LARGURA - len(base))
+    linha[I_ID]   = str(d.get("id") or d.get("_id") or "")
+    linha[I_CIR]  = serial(parse_dt(cf_value(d, CF["data_cirurgia"])))
+    linha[I_MARC] = cf_value(d, CF["cirurgia_marcada"]) or ""
+    return [linha]
 
 
 # ─── Microsoft Graph ──────────────────────────────────────────────────────────
@@ -499,10 +521,10 @@ def ler_existentes(tk):
         log.info("Lendo apenas as ultimas %s linhas (a partir da %s)", LOOKBACK, inicio)
     for ini in range(inicio, total + 1, CH):
         fim = min(total, ini + CH - 1)
-        rg = g("GET", f"{ws}/range(address='A{ini}:P{fim}')?$select=values", tk)
+        rg = g("GET", f"{ws}/range(address='A{ini}:{LER_ATE}{fim}')?$select=values", tk)
         for j, v in enumerate(rg.get("values", [])):
             linha = ini + j
-            rid = str(v[15]).strip() if len(v) > 15 and v[15] not in (None, "") else ""
+            rid = str(v[I_ID]).strip() if len(v) > I_ID and v[I_ID] not in (None, "") else ""
             sk = softkey(v)
             if rid:
                 por_id[rid] = (linha, v)
@@ -552,9 +574,12 @@ def valor_de(v):
 
 
 def formulas_modelo(tk):
-    """Le L2:O2 em R1C1 — independente do numero da linha."""
-    rg = g("GET", f"{WB}/worksheets('{SHEET}')/range(address='L2:O2')?$select=formulasR1C1", tk)
-    return rg["formulasR1C1"][0]
+    """Le cada bloco de colunas calculadas em R1C1 — independente da linha."""
+    mod = []
+    for a, b in FORMULAS:
+        rg = g("GET", f"{WB}/worksheets('{SHEET}')/range(address='{a}2:{b}2')?$select=formulasR1C1", tk)
+        mod.append((a, b, rg["formulasR1C1"][0]))
+    return mod
 
 
 def fim_da_tabela(tk):
@@ -579,13 +604,18 @@ def inserir(tk, linhas, modelo):
     valores = [l[:11] for l in linhas]                      # A..K
     g("PATCH", f"{ws}/range(address='A{ini}:K{fim}')", tk, json={"values": valores})
 
-    ids = [[l[15]] for l in linhas]                          # P — ID da negociacao no RD
+    ids = [[l[I_ID]] for l in linhas]
     if any(x[0] for x in ids):
-        g("PATCH", f"{ws}/range(address='P{ini}:P{fim}')", tk, json={"values": ids})
+        g("PATCH", f"{ws}/range(address='{COL_ID_L}{ini}:{COL_ID_L}{fim}')", tk, json={"values": ids})
 
-    if modelo:
-        g("PATCH", f"{ws}/range(address='L{ini}:O{fim}')", tk,
-          json={"formulasR1C1": [modelo for _ in linhas]})
+    cir = [[l[I_CIR], l[I_MARC]] for l in linhas]
+    if any(x[0] not in (None, "") or x[1] not in (None, "") for x in cir):
+        g("PATCH", f"{ws}/range(address='{COL_CIR_L}{ini}:{COL_MARC_L}{fim}')", tk,
+          json={"values": cir})
+
+    for a, b, mod in (modelo or []):
+        g("PATCH", f"{ws}/range(address='{a}{ini}:{b}{fim}')", tk,
+          json={"formulasR1C1": [mod for _ in linhas]})
 
     nova_ultima = fim_da_tabela(tk)
     if nova_ultima >= fim:
@@ -644,7 +674,7 @@ def main():
 
     inserir_agora, atualizar, vistas = [], [], set()
     for l in novas:
-        rid = l[15]
+        rid = l[I_ID]
         if rid and rid in vistas:
             continue
         vistas.add(rid)
@@ -660,7 +690,7 @@ def main():
         if alvo is None:                       # negocio renomeado no RD
             k3 = chave_sem_nome(l)
             cands = [c for c in por_dvp.get(k3, [])
-                     if not (len(c[1]) > 15 and str(c[1][15]).strip())]
+                     if not (len(c[1]) > I_ID and str(c[1][I_ID]).strip())]
             if len(cands) == 1:
                 alvo = cands[0]
                 origem = "renomeado"
@@ -678,17 +708,17 @@ def main():
             return x is None or (isinstance(x, str) and not x.strip())
 
         dif = []
-        for i in range(11):
+        for i in IDX_CMP:
             cur = atual[i] if i < len(atual) else None
             if igual(l[i], cur):
                 continue
             if vazio(l[i]) and not vazio(cur):
                 continue            # RD sem dado nao apaga o que ja existe
             dif.append(i)
-        for i in range(11):
+        for i in IDX_CMP:
             if i not in dif:
                 l[i] = atual[i] if i < len(atual) else l[i]
-        falta_id = origem in ("chave", "renomeado") or not (len(atual) > 15 and str(atual[15]).strip())
+        falta_id = origem in ("chave", "renomeado") or not (len(atual) > I_ID and str(atual[I_ID]).strip())
         if dif or falta_id:
             atualizar.append((linha, l, dif, falta_id, origem, list(atual)))
 
@@ -696,7 +726,7 @@ def main():
         log.warning("Atualizacoes pendentes: %s — processando %s agora, resto no proximo ciclo",
                     len(atualizar), MAX_UPD)
         atualizar = atualizar[:MAX_UPD]
-    ids_rd = {l[15] for l in novas if l[15]}
+    ids_rd = {l[I_ID] for l in novas if l[I_ID]}
     candidatas = [(rid, lin, v) for rid, (lin, v) in por_id.items()
                   if rid and rid not in ids_rd
                   and any(t in norm(v[1] if len(v) > 1 else "") for t in etapas_venda())]
@@ -728,8 +758,9 @@ def main():
 
     log.info("Novas: %s | atualizacoes: %s", len(inserir_agora), len(atualizar))
 
-    COLS = ["Nome", "Etapa", "Valor", "Criacao", "Fechamento", "Fonte",
-            "Responsavel", "Produtos", "Meio", "Avaliador", "MesAval"]
+    COLS = {0: "Nome", 1: "Etapa", 2: "Valor", 3: "Criacao", 4: "Fechamento", 5: "Fonte",
+            6: "Responsavel", 7: "Produtos", 8: "Meio", 9: "Avaliador", 10: "MesAval",
+            I_CIR: "DataCirurgia", I_MARC: "CirurgiaMarcada"}
     ws = f"{WB}/worksheets('{SHEET}')"
     def mostra(x):
         if x is None or x == "":
@@ -745,11 +776,14 @@ def main():
             log.info("  DRY linha %s [%s] (%s): %s%s", linha, origem, str(l[0])[:26], campos,
                      " +ID" if falta_id else "")
             continue
-        if dif:
+        if any(i <= 10 for i in dif):
             g("PATCH", f"{ws}/range(address='A{linha}:K{linha}')", tk,
               json={"values": [l[:11]]})
+        if any(i in (I_CIR, I_MARC) for i in dif):
+            g("PATCH", f"{ws}/range(address='{COL_CIR_L}{linha}:{COL_MARC_L}{linha}')", tk,
+              json={"values": [[l[I_CIR], l[I_MARC]]]})
         if falta_id:
-            g("PATCH", f"{ws}/range(address='P{linha}')", tk, json={"values": [[l[15]]]})
+            g("PATCH", f"{ws}/range(address='{COL_ID_L}{linha}')", tk, json={"values": [[l[I_ID]]]})
         log.info("  linha %s [%s] (%s): %s%s", linha, origem, str(l[0])[:26], campos,
                  " +ID" if falta_id else "")
 
