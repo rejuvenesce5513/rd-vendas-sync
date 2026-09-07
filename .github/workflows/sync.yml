@@ -2,7 +2,7 @@ name: RD -> Vendas (SharePoint)
 
 on:
   schedule:
-    - cron: "7,22,37,52 * * * *"   # rede de seguranca; o GitHub atrasa e pula disparos
+    - cron: "7,22,37,52 * * * *"   # rede de seguranca; o gatilho principal e o cron-job.org
   workflow_dispatch:
     inputs:
       modo:
@@ -56,3 +56,10 @@ jobs:
           SHEET_NAME:            "Vendas"
           TABLE_NAME:            "Tabela4"
           LOOKBACK_ROWS:         "0"
+
+          # --- posicao das colunas apos a limpeza das formulas ---
+          COL_ID:                "L"    # ID RD
+          COL_CIRURGIA:          "M"    # Data Prevista de Cirurgia
+          COL_CIR_MARCADA:       "N"    # Data Cirurgia foi marcada?
+          LER_ATE:               "N"    # ultima coluna lida
+          FORMULA_RANGES:        ""     # nao ha mais colunas calculadas
