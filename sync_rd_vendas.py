@@ -82,8 +82,11 @@ LARGURA = max(I_ID, I_CIR, I_MARC) + 1
 # ─── aba Prevendas ────────────────────────────────────────────────────────────
 SHEET_PV   = os.environ.get("SHEET_PV", "Prevendas")
 TABLE_PV   = os.environ.get("TABLE_PV", "")           # vazio = grava por intervalo
-PIPE_PV    = os.environ.get("PIPELINE_PV", "")        # id do funil de pre-vendas
-PIPE_PV_NM = os.environ.get("PIPELINE_PV_NOME", "PRE")  # ou trecho do nome
+PIPE_PV    = os.environ.get("PIPELINE_PV", "")        # id do funil, se a API devolver
+PIPE_PV_NM = os.environ.get("PIPELINE_PV_NOME", "")   # ou trecho do nome
+# a API nao devolve o funil na listagem: identificamos pelo nome da etapa
+ETAPAS_PV  = os.environ.get("ETAPAS_PV",
+    "NOVO CONTATO,QUALIFICACAO E INTERESSE,AVALIACAO,REALIZADAS,NO SHOW,DIA 1,DIA 2,DIA 3,DIA 4,DIA 5,DIA 6,DIA 7")
 CUTOFF_PV  = dt.date.fromisoformat(os.environ.get("CUTOFF_PV", os.environ.get("CUTOFF_DATE", "2026-08-01")))
 CF_PV = {
     "primeiro":  os.environ.get("CF_PV_PRIMEIRO", ""),
@@ -211,7 +214,14 @@ def listar_pipelines():
         if not nxt or not j.get("has_more"):
             break
         params = {"limit": 200, "next_page": nxt}
-    log.info("Funis encontrados (amostra das primeiras paginas):")
+    conta = {"pre-vendas": 0, "comercial/outro": 0}
+    for (pid, nome), etapas in vistos.items():
+        for e, n in etapas.items():
+            conta["pre-vendas" if norm(e) in etapas_pv() else "comercial/outro"] += n
+    log.info("Classificacao pela etapa: pre-vendas=%s | comercial/outro=%s",
+             conta["pre-vendas"], conta["comercial/outro"])
+    log.info("Etapas tratadas como pre-vendas: %s", ", ".join(sorted(etapas_pv())))
+    log.info("Funis encontrados (a API nao devolve o funil na listagem):")
     for (pid, nome), etapas in sorted(vistos.items(), key=lambda x: -sum(x[1].values())):
         log.info("  %-26s id=%s", nome[:26], pid)
         for e, n in sorted(etapas.items(), key=lambda x: -x[1]):
@@ -220,19 +230,13 @@ def listar_pipelines():
 
 def campos_prevendas():
     """Mostra os campos personalizados de negocios do funil de pre-vendas."""
-    alvo = norm(PIPE_PV_NM)
     params, achados = {"limit": 200}, 0
     for _ in range(8):
         j = rd_get(params)
         if not j:
             break
         for d in j.get("deals", []):
-            pl = d.get("deal_pipeline") or {}
-            pid = pl.get("id") or pl.get("_id") or ""
-            if PIPE_PV:
-                if pid != PIPE_PV:
-                    continue
-            elif alvo not in norm(pl.get("name")):
+            if not do_funil_pv(d):
                 continue
             log.info("=== %s | etapa %s | estado win=%s", d.get("name"),
                      nome_etapa(d), d.get("win"))
@@ -249,8 +253,7 @@ def campos_prevendas():
             break
         params = {"limit": 200, "next_page": nxt}
     if not achados:
-        log.warning("Nenhum negocio encontrado no funil '%s'. Rode --pipelines para ver os nomes.",
-                    PIPE_PV or PIPE_PV_NM)
+        log.warning("Nenhum negocio nas etapas de pre-vendas. Etapas procuradas: %s", sorted(etapas_pv()))
 
 
 def diagnostico():
@@ -762,12 +765,24 @@ def linha_prevenda(d):
     ]
 
 
+_ETPV = None
+
+
+def etapas_pv():
+    global _ETPV
+    if _ETPV is None:
+        _ETPV = {norm(x) for x in ETAPAS_PV.split(",") if x.strip()}
+    return _ETPV
+
+
 def do_funil_pv(d):
     pl = d.get("deal_pipeline") or {}
     pid = pl.get("id") or pl.get("_id") or ""
-    if PIPE_PV:
+    if PIPE_PV and pid:
         return pid == PIPE_PV
-    return norm(PIPE_PV_NM) in norm(pl.get("name"))
+    if PIPE_PV_NM and pl.get("name"):
+        return norm(PIPE_PV_NM) in norm(pl.get("name"))
+    return norm(nome_etapa(d)) in etapas_pv()   # identificacao pela etapa
 
 
 def buscar_prevendas():
