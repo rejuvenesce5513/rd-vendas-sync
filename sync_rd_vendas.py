@@ -793,18 +793,34 @@ PV_PREFIXO = os.environ.get("PV_PREFIXO", r"^\s*Pr[eé]-?\s*vendas\s*-\s*[^-]*-\
 
 
 def nome_prevenda(d):
-    """Usa o nome da NEGOCIACAO, so removendo o prefixo do funil.
-    O contato as vezes e outra pessoa (conjuge, indicante), entao serve apenas
-    de ultimo recurso quando a negociacao nao tem nome."""
+    """A negociacao as vezes tem nome curto ("Rafael"); o contato as vezes e outra
+    pessoa (conjuge, indicante). Compara por palavras: mesma pessoa -> nome mais
+    completo; pessoas diferentes -> vale o da negociacao."""
     bruto = (d.get("name") or "").strip()
-    if bruto:
-        try:
-            limpo = re.sub(PV_PREFIXO, "", bruto, flags=re.I).strip()
-        except Exception:
-            limpo = bruto
-        return limpo or bruto
+    try:
+        limpo = re.sub(PV_PREFIXO, "", bruto, flags=re.I).strip() or bruto
+    except Exception:
+        limpo = bruto
     cts = d.get("contacts") or []
-    return ((cts[0].get("name") if cts else "") or "").strip()
+    ct = ((cts[0].get("name") if cts else "") or "").strip()
+    if not ct:
+        return limpo
+    if not limpo:
+        return ct
+    ta, tb = set(norm(limpo).split()), set(norm(ct).split())
+    menor, maior = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    if menor and menor <= maior:                      # mesma pessoa
+        return limpo if len(limpo) >= len(ct) else ct
+    if len(limpo) <= 3:
+        # so aceita o contato se o apelido for inicio de alguma palavra dele
+        # ("Ba" -> Basilios) ou as iniciais ("DG" -> Douglas Guadalupe).
+        pal = norm(ct).split()
+        curto = norm(limpo).replace(".", "")
+        iniciais = "".join(w[0] for w in pal if w)
+        if curto and (any(w.startswith(curto) for w in pal) or curto == iniciais
+                      or (len(curto) == 2 and iniciais.startswith(curto[0]) and curto[1] in iniciais[1:])):
+            return ct
+    return limpo
 
 
 def linha_prevenda(d):
