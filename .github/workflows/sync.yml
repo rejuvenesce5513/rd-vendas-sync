@@ -67,7 +67,8 @@ jobs:
           COL_ID:                "L"    # ID RD
           COL_CIRURGIA:          "M"    # Data Prevista de Cirurgia
           COL_CIR_MARCADA:       "N"    # Data Cirurgia foi marcada?
-          LER_ATE:               "N"    # ultima coluna lida
+          COL_FEEGOW:            "O"    # ID Feegow — crie o cabecalho em O1 antes
+          LER_ATE:               "O"    # ultima coluna lida
           FORMULA_RANGES:        ""     # nao ha mais colunas calculadas
 
           # --- aba Prevendas ---
