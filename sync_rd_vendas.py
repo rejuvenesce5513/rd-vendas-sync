@@ -315,13 +315,39 @@ def cobertura_feegow():
     existentes = por_id
     log.info("Aba %s: %s linha(s) no total | %s com ID RD", SHEET, max(0, total - 1), len(existentes))
 
+    # ---- lado da planilha: quantas linhas ja tem a coluna do ID preenchida ----
+    if I_FEE >= 0:
+        tk2 = token(); abrir_sessao(tk2)
+        try:
+            ws = f"{WB}/worksheets('{SHEET}')"
+            ur = g("GET", f"{ws}/usedRange(valuesOnly=true)?$select=rowCount", tk2)
+            n = int(ur.get("rowCount") or 0)
+            colL = chr(65 + I_FEE)
+            preench = comIdRD = 0
+            CH = 2000
+            for ini in range(2, max(n, 1) + 1, CH):
+                fim = min(n, ini + CH - 1)
+                rg = g("GET", f"{ws}/range(address='{COL_ID_L}{ini}:{colL}{fim}')?$select=values", tk2)
+                for v in rg.get("values", []):
+                    if v and str(v[0]).strip():
+                        comIdRD += 1
+                        if len(v) > (I_FEE - I_ID) and str(v[I_FEE - I_ID]).strip():
+                            preench += 1
+            log.info("Coluna %s da aba %s: %s de %s linha(s) com ID RD ja tem ID Feegow (%.0f%%)",
+                     colL, SHEET, preench, comIdRD, (preench / comIdRD * 100) if comIdRD else 0)
+        finally:
+            fechar_sessao(tk2)
+    else:
+        log.info("COL_FEEGOW nao configurado — medindo apenas o lado do RD.")
+
     deals = buscar_deals()
-    log.info("Negocios elegiveis no RD desde %s: %s", CUTOFF, len(deals))
+    eleg = [d for d in deals if elegivel(d)]
+    log.info("RD: %s ganho(s) no periodo | %s no funil comercial elegivel", len(deals), len(eleg))
 
     porMes = {}
     naPlanilha = comId = semId = 0
     exemplos = []
-    for d in deals:
+    for d in eleg:
         rid = str(d.get("id") or d.get("_id") or "")
         v = cf_value(d, cf)
         fech = parse_dt(d.get("closed_at"))
@@ -345,7 +371,7 @@ def cobertura_feegow():
         log.info("%-12s %8s %8s %7.0f%%", ym, n, c, (c / n * 100) if n else 0)
     tot = comId + semId
     log.info("")
-    log.info("TOTAL: %s negocio(s) | %s com ID Feegow (%.0f%%) | %s sem",
+    log.info("FUNIL COMERCIAL: %s negocio(s) | %s com ID Feegow (%.0f%%) | %s sem",
              tot, comId, (comId / tot * 100) if tot else 0, semId)
     log.info("Desses, %s ja estao na aba %s pelo ID RD", naPlanilha, SHEET)
     for nome, v in exemplos:
