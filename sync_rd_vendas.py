@@ -264,7 +264,7 @@ def norm(v):
 S = requests.Session()
 SAFETY_DAYS = int(os.environ.get("SAFETY_DAYS", "540"))
 LOOKBACK = int(os.environ.get("LOOKBACK_ROWS", "800"))   # 0 = ler a planilha inteira
-MAX_UPD  = int(os.environ.get("MAX_UPDATES", "200"))
+MAX_UPD  = int(os.environ.get("MAX_UPDATES", "60"))
 MARCAR_REV = os.environ.get("MARCAR_REVERTIDAS", "1") not in ("0", "false", "")      # teto por execucao; o resto vai no proximo ciclo
 
 
@@ -1534,13 +1534,13 @@ def sincronizar_marcacoes(tk):
         linha[MC["data"]] = dS
         linha[MC["hora"]] = hS
         linha[MC["paciente"]] = nome
-        linha[MC["idPac"]] = pid
+        linha[MC["idPac"]] = int(pid) if str(pid).isdigit() else pid
         linha[MC["tipo"]] = procs.get(proc, "")
         linha[MC["prof"]] = profs.get(str(a.get("profissional_id") or ""), "")
         linha[MC["status"]] = st
         linha[MC["agendou"]] = (a.get("agendado_por") or "").strip()
         linha[MC["marcado"]] = marcado
-        linha[MC["idAgd"]] = aid
+        linha[MC["idAgd"]] = int(aid) if str(aid).isdigit() else aid
         # "Realizado em" nao existe na API: registra quando o sync viu virar Atendido
         if norm(st) == norm(FG_ST_ATENDIDO):
             ja = existente and len(existente[1]) > MC["realizado"] and \
@@ -1604,25 +1604,28 @@ def sincronizar_marcacoes(tk):
 
     COLS_MC = {v: k for k, v in MC.items()}
 
-    def mostraMC(x):
+    COL_DATA = {MC["data"], MC["marcado"], MC["realizado"], MC["evento"]}
+
+    def mostraMC(x, col=None):
         if x in (None, ""):
             return "(vazio)"
         if isinstance(x, (int, float)):
             f = float(x)
-            if 20000 < f < 80000:
+            if col in COL_DATA and 20000 < f < 80000:
                 d0 = EPOCH + dt.timedelta(days=f)
                 return d0.strftime("%d/%m/%Y %H:%M" if abs(f - int(f)) > 1e-9 else "%d/%m/%Y")
-            if 0 < f < 1:
+            if col == MC["hora"] and 0 < f < 1:
                 m = round(f * 1440)
                 return f"{m//60:02d}:{m%60:02d}"
+            return str(int(f)) if f == int(f) else str(f)
         return str(x)[:30] + " [texto]"
 
     if MAX_UPD and len(atualiza) > MAX_UPD:
         log.warning("Feegow: %s atualizacoes pendentes, processando %s", len(atualiza), MAX_UPD)
         atualiza = atualiza[:MAX_UPD]
     for lin, l, dif, antes in atualiza:
-        det = ", ".join(f"{COLS_MC[i]}: {mostraMC(antes[i] if i < len(antes) else None)}"
-                        f" -> {mostraMC(l[i])}" for i in dif)
+        det = ", ".join(f"{COLS_MC[i]}: {mostraMC(antes[i] if i < len(antes) else None, i)}"
+                        f" -> {mostraMC(l[i], i)}" for i in dif)
         if DRYRUN:
             log.info("  DRY mc linha %s (%s): %s", lin, str(l[MC['paciente']])[:24], det)
             continue
@@ -1632,8 +1635,8 @@ def sincronizar_marcacoes(tk):
     if novas:
         if DRYRUN:
             for l in novas[:10]:
-                log.info("  DRY mc nova: %s | %s | %s | %s", mostraMC(l[0]), mostraMC(l[1]),
-                         str(l[2])[:26], l[6])
+                log.info("  DRY mc nova: %s | %s | %s | %s", mostraMC(l[0], MC["data"]),
+                         mostraMC(l[1], MC["hora"]), str(l[2])[:26], l[6])
         else:
             ini = total + 1
             for k in range(0, len(novas), 50):
