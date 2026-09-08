@@ -793,16 +793,18 @@ PV_PREFIXO = os.environ.get("PV_PREFIXO", r"^\s*Pr[eé]-?\s*vendas\s*-\s*[^-]*-\
 
 
 def nome_prevenda(d):
-    """A aba usa o nome do paciente; a negociacao vem com prefixo do funil."""
-    cts = d.get("contacts") or []
-    n = (cts[0].get("name") if cts else "") or ""
-    if n.strip():
-        return n.strip()
+    """Usa o nome da NEGOCIACAO, so removendo o prefixo do funil.
+    O contato as vezes e outra pessoa (conjuge, indicante), entao serve apenas
+    de ultimo recurso quando a negociacao nao tem nome."""
     bruto = (d.get("name") or "").strip()
-    try:
-        return re.sub(PV_PREFIXO, "", bruto, flags=re.I).strip() or bruto
-    except Exception:
-        return bruto
+    if bruto:
+        try:
+            limpo = re.sub(PV_PREFIXO, "", bruto, flags=re.I).strip()
+        except Exception:
+            limpo = bruto
+        return limpo or bruto
+    cts = d.get("contacts") or []
+    return ((cts[0].get("name") if cts else "") or "").strip()
 
 
 def linha_prevenda(d):
