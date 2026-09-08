@@ -97,6 +97,28 @@ FG_DIAS_TRAS = int(os.environ.get("FEEGOW_DIAS_TRAS", "30"))
 FG_DIAS_FRENTE = int(os.environ.get("FEEGOW_DIAS_FRENTE", "90"))
 FG_ST_ATENDIDO = os.environ.get("FEEGOW_STATUS_ATENDIDO", "Atendido")
 FG_MAX_NOMES = int(os.environ.get("FEEGOW_MAX_NOMES", "60"))
+FG_PAC_PATHS = [x.strip() for x in os.environ.get(
+    "FEEGOW_PACIENTE_PATHS",
+    "/patient/search,/patient/informations,/patient/information,/patient/list").split(",") if x.strip()]
+_FG_PAC_OK = [None]
+
+
+def fg_nome_paciente(pid):
+    """A doc nao expoe o caminho: tenta os candidatos e memoriza o que responder."""
+    caminhos = [_FG_PAC_OK[0]] if _FG_PAC_OK[0] else FG_PAC_PATHS
+    for c in caminhos:
+        j = fg_get(c, {"paciente_id": pid}, tolerante=True)
+        itens = fg_conteudo(j)
+        for it in itens:
+            if not isinstance(it, dict):
+                continue
+            nm = it.get("nome") or it.get("nome_completo") or it.get("name") or ""
+            if nm:
+                if _FG_PAC_OK[0] != c:
+                    log.info("  endpoint de paciente: %s", c)
+                    _FG_PAC_OK[0] = c
+                return str(nm).strip()
+    return ""
 # colunas da aba Marcacoes (A..O)
 MC = {"data": 0, "hora": 1, "paciente": 2, "idPac": 3, "tipo": 4, "prof": 5,
       "status": 6, "agendou": 7, "marcado": 8, "realizado": 9, "evento": 10,
@@ -128,6 +150,8 @@ def fg_get(caminho, params=None, tolerante=False):
         if r.status_code in (429, 500, 502, 503, 504):
             log.warning("  feegow %s: HTTP %s — aguardando %ss", caminho, r.status_code, espera)
             time.sleep(espera); continue
+        if r.status_code == 404 and tolerante:
+            return None
         log.error("  feegow %s: HTTP %s — %s", caminho, r.status_code, r.text[:160])
         return None
     return None
@@ -1461,7 +1485,15 @@ def sincronizar_marcacoes(tk):
     log.info("Tabelas: %s status | %s procedimentos | %s profissionais",
              len(status), len(procs), len(profs))
 
-    agenda = fg_buscar_agenda()
+    bruto = fg_buscar_agenda()
+    vistos, agenda = set(), []
+    for a in bruto:
+        aid = str(a.get("agendamento_id") or "")
+        if aid and aid in vistos:
+            continue
+        vistos.add(aid); agenda.append(a)
+    if len(agenda) != len(bruto):
+        log.info("  %s duplicata(s) da paginacao descartada(s)", len(bruto) - len(agenda))
     alvo = set(FG_PROCS)
     agora = dt.datetime.now()
     novas, atualiza, semNome, ignorados = [], [], set(), 0
@@ -1479,6 +1511,7 @@ def sincronizar_marcacoes(tk):
         st = status.get(str(a.get("status_id") or ""), "")
         dS, hS = fg_data_serial(a.get("data")), fg_hora_frac(a.get("horario"))
         mkD, mkH = fg_dh(a.get("agendado_em"))
+        marcado = (mkD + mkH) if mkD != "" else ""
         nome = nomePorId.get(pid, "")
         if not nome and existente:
             nome = str(existente[1][MC["paciente"]] or "").strip()
@@ -1493,7 +1526,7 @@ def sincronizar_marcacoes(tk):
         linha[MC["prof"]] = profs.get(str(a.get("profissional_id") or ""), "")
         linha[MC["status"]] = st
         linha[MC["agendou"]] = (a.get("agendado_por") or "").strip()
-        linha[MC["marcado"]] = mkD
+        linha[MC["marcado"]] = marcado
         linha[MC["idAgd"]] = aid
         # "Realizado em" nao existe na API: registra quando o sync viu virar Atendido
         if norm(st) == norm(FG_ST_ATENDIDO):
@@ -1528,12 +1561,15 @@ def sincronizar_marcacoes(tk):
              len(novas), len(atualiza), ignorados)
     if semNome:
         log.info("Pacientes sem nome em cache: %s (buscando ate %s)", len(semNome), FG_MAX_NOMES)
+        achou = 0
         for pid in list(semNome)[:FG_MAX_NOMES]:
-            j = fg_get("/patient/informations", {"paciente_id": pid}, tolerante=True)
-            c = fg_conteudo(j)
-            nm = (c[0].get("nome") if c and isinstance(c[0], dict) else "") or ""
+            nm = fg_nome_paciente(pid)
             if nm:
-                nomePorId[pid] = nm.strip()
+                nomePorId[pid] = nm; achou += 1
+            elif _FG_PAC_OK[0] is None and achou == 0:
+                log.warning("  nenhum caminho de paciente funcionou — nomes ficarao em branco")
+                break
+        log.info("  %s nome(s) obtido(s)", achou)
         for l in novas:
             if not l[MC["paciente"]]:
                 l[MC["paciente"]] = nomePorId.get(l[MC["idPac"]], "")
