@@ -975,18 +975,38 @@ def sincronizar_prevendas(tk):
                if not igual(l[i], atual[i] if i < len(atual) else None)
                and not (l[i] in (None, "") and (atual[i] if i < len(atual) else None) not in (None, ""))]
         if dif:
-            atualiza.append((lin, l, dif))
+            atualiza.append((lin, l, dif, list(atual)))
 
     if MAX_UPD and len(atualiza) > MAX_UPD:
         log.warning("Pre-vendas: %s atualizacoes pendentes, processando %s", len(atualiza), MAX_UPD)
         atualiza = atualiza[:MAX_UPD]
     log.info("Pre-vendas: %s nova(s) | %s atualizacao(oes)", len(novas), len(atualiza))
 
-    for lin, l, dif in atualiza:
+    COLS_PV = ["Nome", "Etapa", "Estado", "MotivoPerda", "DataCri", "HoraCri",
+               "DataPrimContato", "HoraPrimContato", "DataUltContato", "HoraUltContato",
+               "DataFech", "HoraFech", "Fonte", "Responsavel", "Agendou", "Meio",
+               "Realizada", "Avaliador", "DataAval", "IDFeegow", "ID", "IDContato"]
+
+    def mostraPV(x):
+        if x in (None, ""):
+            return "(vazio)"
+        if isinstance(x, (int, float)):
+            f = float(x)
+            if 20000 < f < 80000:
+                return (EPOCH + dt.timedelta(days=int(f))).strftime("%d/%m/%Y")
+            if 0 < f < 1:
+                m = round(f * 1440)
+                return f"{m//60:02d}:{m%60:02d}"
+        return str(x)[:34]
+
+    for lin, l, dif, antes in atualiza:
+        det = ", ".join(f"{COLS_PV[i]}: {mostraPV(antes[i] if i < len(antes) else None)} -> {mostraPV(l[i])}"
+                        for i in dif)
         if DRYRUN:
-            log.info("  DRY pv linha %s (%s): %s", lin, str(l[0])[:26], ",".join(str(i) for i in dif))
+            log.info("  DRY pv linha %s: %s", lin, det)
             continue
         g("PATCH", f"{ws}/range(address='A{lin}:V{lin}')", tk, json={"values": [l]})
+        log.info("  pv linha %s: %s", lin, det[:160])
     if novas and not DRYRUN:
         ini = total + 1
         for k in range(0, len(novas), 50):
