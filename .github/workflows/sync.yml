@@ -9,7 +9,7 @@ on:
         description: "O que executar"
         type: choice
         default: gravar
-        options: [gravar, dry-run, feegow, pipelines, campos-pv, bruto-pv, pv-dry, prevendas, campos, diagnostico, listar]
+        options: [gravar, dry-run, fg-procedimentos, fg-agenda-dry, fg-agenda, feegow, feegow-bf-dry, feegow-bf, pipelines, campos-pv, bruto-pv, pv-dry, prevendas, campos, diagnostico, listar]
 
 permissions:
   contents: read
@@ -47,12 +47,18 @@ jobs:
             campos-pv)  python sync_rd_vendas.py --campos-pv  ;;
             bruto-pv)   python sync_rd_vendas.py --bruto-pv   ;;
             feegow)     python sync_rd_vendas.py --feegow     ;;
+            feegow-bf-dry) python sync_rd_vendas.py --feegow-backfill --dry-run ;;
+            feegow-bf)     python sync_rd_vendas.py --feegow-backfill ;;
+            fg-procedimentos) python sync_rd_vendas.py --feegow-procedimentos ;;
+            fg-agenda-dry) python sync_rd_vendas.py --feegow-agenda --dry-run ;;
+            fg-agenda)     python sync_rd_vendas.py --feegow-agenda ;;
             prevendas)  python sync_rd_vendas.py --prevendas  ;;
             pv-dry)     python sync_rd_vendas.py --prevendas --dry-run ;;
             *)       python sync_rd_vendas.py           ;;
           esac
         env:
           RD_TOKEN:              ${{ secrets.RD_TOKEN }}
+          FEEGOW_TOKEN:          ${{ secrets.FEEGOW_TOKEN }}
           AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET:   ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -86,4 +92,14 @@ jobs:
           CF_PV_AVALIADOR:       "691b0d0ab5e2d0001db1085d"
           CF_PV_DATA_AVAL:       "691e0f68034fef0015ca1a3f"
           CF_PV_FEEGOW:          "6a6b5afb84ec2f001de5df5a"
-          CF_ID_FEEGOW:          "6a6b5afb84ec2f001de5df5a"   # usado pelo modo "feegow"
+          CF_ID_FEEGOW:          "6a6b5afb84ec2f001de5df5a"   # usado pelos modos "feegow"
+          # --- aba Marcacoes, alimentada pelo Feegow ---
+          SHEET_MARCACOES:       "Marcações"
+          FEEGOW_PROCEDIMENTOS:  "1,3,16"   # 1a avaliacao presencial, online, reavaliacao
+          FEEGOW_DIAS_TRAS:      "30"
+          FEEGOW_DIAS_FRENTE:    "90"
+          FEEGOW_STATUS_ATENDIDO: "Atendido"
+          FEEGOW_MAX_NOMES:      "60"       # buscas de nome de paciente por ciclo
+
+          FEEGOW_DE:             "2026-06-01"   # backfill: inicio (inclusivo)
+          FEEGOW_ATE:            "2026-08-01"   # backfill: fim (exclusivo)
