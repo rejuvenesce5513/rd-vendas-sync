@@ -9,7 +9,7 @@ on:
         description: "O que executar"
         type: choice
         default: gravar
-        options: [gravar, dry-run, pipelines, campos-pv, pv-dry, prevendas, campos, diagnostico, listar]
+        options: [gravar, dry-run, pipelines, campos-pv, bruto-pv, pv-dry, prevendas, campos, diagnostico, listar]
 
 permissions:
   contents: read
@@ -45,6 +45,7 @@ jobs:
             dry-run) python sync_rd_vendas.py --dry-run ;;
             pipelines)  python sync_rd_vendas.py --pipelines  ;;
             campos-pv)  python sync_rd_vendas.py --campos-pv  ;;
+            bruto-pv)   python sync_rd_vendas.py --bruto-pv   ;;
             prevendas)  python sync_rd_vendas.py --prevendas  ;;
             pv-dry)     python sync_rd_vendas.py --prevendas --dry-run ;;
             *)       python sync_rd_vendas.py           ;;
@@ -75,8 +76,8 @@ jobs:
           ETAPAS_PV:             "NOVO CONTATO,QUALIFICACAO E INTERESSE,AVALIACAO,REALIZADAS,NO SHOW,DIA 1,DIA 2,DIA 3,DIA 4,DIA 5,DIA 6,DIA 7"
           CF_PV_PRIMEIRO:        ""       # --campos-pv mostra os ids
           CF_PV_ULTIMO:          ""
-          CF_PV_AGENDOU:         ""
-          CF_PV_REALIZADA:       ""
+          CF_PV_AGENDOU:         "6740c0264636ba001da07a13"
+          CF_PV_REALIZADA:       "68a4b62611150a0014b02f4b"
           CF_PV_MEIO:            "6740c07d840a380026d05b3e"
           CF_PV_AVALIADOR:       "691b0d0ab5e2d0001db1085d"
           CF_PV_DATA_AVAL:       "691e0f68034fef0015ca1a3f"
