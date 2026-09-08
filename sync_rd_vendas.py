@@ -765,7 +765,8 @@ def _dh(iso):
     except Exception:
         d = parse_dt(iso)
         return (serial(d), "") if d else ("", "")
-    return serial(x.date()), round((x.hour * 3600 + x.minute * 60 + x.second) / 86400.0, 10)
+    # a planilha guarda hora:minuto, sem segundos — incluir segundos gera diferenca em toda linha
+    return serial(x.date()), (x.hour * 60 + x.minute) / 1440.0
 
 
 def estado_pt(d):
