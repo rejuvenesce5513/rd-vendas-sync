@@ -79,7 +79,11 @@ FORMULAS   = [tuple(x.split(":")) for x in
               os.environ.get("FORMULA_RANGES", "L:M,Q:X").split(",") if ":" in x]
 
 I_ID, I_CIR, I_MARC = _idx(COL_ID_L), _idx(COL_CIR_L), _idx(COL_MARC_L)
-LARGURA = max(I_ID, I_CIR, I_MARC) + 1
+COL_FEE_L = os.environ.get("COL_FEEGOW", "").strip().upper()      # vazio = nao grava
+I_FEE     = (ord(COL_FEE_L) - 65) if COL_FEE_L else -1
+CF_FEEGOW = os.environ.get("CF_ID_FEEGOW", "6a6b5afb84ec2f001de5df5a")
+
+LARGURA = max(I_ID, I_CIR, I_MARC, I_FEE) + 1
 
 # ─── aba Prevendas ────────────────────────────────────────────────────────────
 SHEET_PV   = os.environ.get("SHEET_PV", "Prevendas")
@@ -102,7 +106,7 @@ CF_PV = {
     "dataAval":  os.environ.get("CF_PV_DATA_AVAL", "691e0f68034fef0015ca1a3f"),
     "feegow":    os.environ.get("CF_PV_FEEGOW", "6a6b5afb84ec2f001de5df5a"),
 }
-IDX_CMP = list(range(11)) + [I_CIR, I_MARC]
+IDX_CMP = list(range(11)) + [I_CIR, I_MARC] + ([I_FEE] if I_FEE >= 0 else [])
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -580,6 +584,8 @@ def linhas_do_deal(d):
     linha[I_ID]   = str(d.get("id") or d.get("_id") or "")
     linha[I_CIR]  = serial(parse_dt(cf_value(d, CF["data_cirurgia"])))
     linha[I_MARC] = cf_value(d, CF["cirurgia_marcada"]) or ""
+    if I_FEE >= 0:
+        linha[I_FEE] = cf_value(d, CF_FEEGOW) or ""
     return [linha]
 
 
