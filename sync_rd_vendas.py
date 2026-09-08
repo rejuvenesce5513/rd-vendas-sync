@@ -41,6 +41,7 @@ DIAG    = "--diagnostico" in sys.argv
 PIPES_D = "--pipelines" in sys.argv
 CAMPOS_PV = "--campos-pv" in sys.argv
 BRUTO_PV  = "--bruto-pv" in sys.argv
+FEEGOW_D  = "--feegow" in sys.argv
 SO_PV   = "--prevendas" in sys.argv
 SEM_PV  = "--sem-prevendas" in sys.argv
 CAMPOS  = "--campos" in sys.argv
@@ -297,6 +298,57 @@ def bruto_prevendas():
             break
         params = {"limit": 200, "next_page": nxt}
     log.warning("Nenhum negocio de pre-vendas encontrado.")
+
+
+def cobertura_feegow():
+    """Quantas linhas da aba Vendas teriam o ID Feegow preenchido hoje."""
+    cf = os.environ.get("CF_ID_FEEGOW", "6a6b5afb84ec2f001de5df5a")
+    tk = token(); resolver_arquivo(tk); abrir_sessao(tk)
+    try:
+        mapa, por_id, por_dvp, total = ler_existentes(tk)
+    finally:
+        fechar_sessao(tk)
+    existentes = por_id
+    log.info("Aba %s: %s linha(s) no total | %s com ID RD", SHEET, max(0, total - 1), len(existentes))
+
+    deals = buscar_deals()
+    log.info("Negocios elegiveis no RD desde %s: %s", CUTOFF, len(deals))
+
+    porMes = {}
+    naPlanilha = comId = semId = 0
+    exemplos = []
+    for d in deals:
+        rid = str(d.get("id") or d.get("_id") or "")
+        v = cf_value(d, cf)
+        fech = parse_dt(d.get("closed_at"))
+        ym = fech.strftime("%Y-%m") if fech else "sem data"
+        a = porMes.setdefault(ym, [0, 0])
+        a[0] += 1
+        if v not in (None, "", 0):
+            a[1] += 1
+            comId += 1
+            if len(exemplos) < 3:
+                exemplos.append((d.get("name"), v))
+        else:
+            semId += 1
+        if rid in existentes:
+            naPlanilha += 1
+
+    log.info("")
+    log.info("%-12s %8s %8s %8s", "mes", "negocios", "com ID", "%")
+    for ym in sorted(porMes):
+        n, c = porMes[ym]
+        log.info("%-12s %8s %8s %7.0f%%", ym, n, c, (c / n * 100) if n else 0)
+    tot = comId + semId
+    log.info("")
+    log.info("TOTAL: %s negocio(s) | %s com ID Feegow (%.0f%%) | %s sem",
+             tot, comId, (comId / tot * 100) if tot else 0, semId)
+    log.info("Desses, %s ja estao na aba %s pelo ID RD", naPlanilha, SHEET)
+    for nome, v in exemplos:
+        log.info("   exemplo: %-40s ID Feegow = %r", str(nome)[:40], v)
+    if not comId:
+        log.warning("Nenhum negocio com o campo preenchido. Confira o id do campo em CF_ID_FEEGOW "
+                    "rodando o modo 'campos'.")
 
 
 def diagnostico():
@@ -1095,6 +1147,9 @@ def main():
     log.info("Config: drive=%s... file_id=%s path=%s", DRIVE_ID[:12], FILE_ID or "(vazio)", FILE_PATH)
     if PIPES_D:
         listar_pipelines()
+        return
+    if FEEGOW_D:
+        cobertura_feegow()
         return
     if BRUTO_PV:
         bruto_prevendas()
