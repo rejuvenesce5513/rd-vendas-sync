@@ -828,6 +828,12 @@ def inserir(tk, linhas, modelo):
         g("PATCH", f"{ws}/range(address='{COL_CIR_L}{ini}:{COL_MARC_L}{fim}')", tk,
           json={"values": cir})
 
+    if I_FEE >= 0:
+        fees = [[l[I_FEE]] for l in linhas]
+        if any(str(x[0] or "").strip() for x in fees):
+            g("PATCH", f"{ws}/range(address='{COL_FEE_L}{ini}:{COL_FEE_L}{fim}')", tk,
+              json={"values": fees})
+
     for a, b, mod in (modelo or []):
         g("PATCH", f"{ws}/range(address='{a}{ini}:{b}{fim}')", tk,
           json={"formulasR1C1": [mod for _ in linhas]})
@@ -1353,6 +1359,9 @@ def main():
               json={"values": [[l[I_CIR], l[I_MARC]]]})
         if falta_id:
             g("PATCH", f"{ws}/range(address='{COL_ID_L}{linha}')", tk, json={"values": [[l[I_ID]]]})
+        if I_FEE >= 0 and I_FEE in dif:
+            g("PATCH", f"{ws}/range(address='{COL_FEE_L}{linha}')", tk,
+              json={"values": [[l[I_FEE]]]})
         log.info("  linha %s [%s] (%s): %s%s", linha, origem, str(l[0])[:26], campos,
                  " +ID" if falta_id else "")
 
