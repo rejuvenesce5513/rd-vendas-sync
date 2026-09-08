@@ -40,6 +40,7 @@ LISTAR  = "--listar" in sys.argv
 DIAG    = "--diagnostico" in sys.argv
 PIPES_D = "--pipelines" in sys.argv
 CAMPOS_PV = "--campos-pv" in sys.argv
+BRUTO_PV  = "--bruto-pv" in sys.argv
 SO_PV   = "--prevendas" in sys.argv
 SEM_PV  = "--sem-prevendas" in sys.argv
 CAMPOS  = "--campos" in sys.argv
@@ -91,9 +92,9 @@ CUTOFF_PV  = dt.date.fromisoformat(os.environ.get("CUTOFF_PV", os.environ.get("C
 CF_PV = {
     "primeiro":  os.environ.get("CF_PV_PRIMEIRO", ""),
     "ultimo":    os.environ.get("CF_PV_ULTIMO", ""),
-    "agendou":   os.environ.get("CF_PV_AGENDOU", ""),
+    "agendou":   os.environ.get("CF_PV_AGENDOU", "6740c0264636ba001da07a13"),
     "meio":      os.environ.get("CF_PV_MEIO", "6740c07d840a380026d05b3e"),
-    "realizada": os.environ.get("CF_PV_REALIZADA", ""),
+    "realizada": os.environ.get("CF_PV_REALIZADA", "68a4b62611150a0014b02f4b"),
     "avaliador": os.environ.get("CF_PV_AVALIADOR", "691b0d0ab5e2d0001db1085d"),
     "dataAval":  os.environ.get("CF_PV_DATA_AVAL", "691e0f68034fef0015ca1a3f"),
     "feegow":    os.environ.get("CF_PV_FEEGOW", "6a6b5afb84ec2f001de5df5a"),
@@ -254,6 +255,44 @@ def campos_prevendas():
         params = {"limit": 200, "next_page": nxt}
     if not achados:
         log.warning("Nenhum negocio nas etapas de pre-vendas. Etapas procuradas: %s", sorted(etapas_pv()))
+
+
+def bruto_prevendas():
+    """Estrutura crua de um negocio de pre-vendas: revela campos nativos."""
+    import json as _j
+    params = {"limit": 200}
+    for _ in range(8):
+        j = rd_get(params)
+        if not j:
+            break
+        for d in j.get("deals", []):
+            if not do_funil_pv(d):
+                continue
+            log.info("=== %s | etapa %s", d.get("name"), nome_etapa(d))
+            log.info("--- chaves de primeiro nivel ---")
+            for k in sorted(d.keys()):
+                v = d[k]
+                if isinstance(v, (dict, list)):
+                    log.info("  %-28s %s", k, _j.dumps(v, ensure_ascii=False)[:220])
+                else:
+                    log.info("  %-28s %r", k, v)
+            det = buscar_deal(str(d.get("id") or d.get("_id") or ""))
+            if isinstance(det, dict):
+                extras = [k for k in det.keys() if k not in d]
+                log.info("--- chaves extras no detalhe do negocio ---")
+                for k in sorted(extras):
+                    v = det[k]
+                    log.info("  %-28s %s", k,
+                             (_j.dumps(v, ensure_ascii=False)[:220] if isinstance(v, (dict, list)) else repr(v)))
+                ct = (det.get("contacts") or [{}])[0]
+                log.info("--- primeiro contato do detalhe ---")
+                log.info("  %s", _j.dumps(ct, ensure_ascii=False)[:400])
+            return
+        nxt = j.get("next_page")
+        if not nxt:
+            break
+        params = {"limit": 200, "next_page": nxt}
+    log.warning("Nenhum negocio de pre-vendas encontrado.")
 
 
 def diagnostico():
@@ -761,7 +800,7 @@ def linha_prevenda(d):
         serial(parse_dt(cf_value(d, CF_PV["dataAval"]))) or "",  # S Data da avaliacao
         cf_value(d, CF_PV["feegow"]) or "",                   # T ID Feegow
         str(d.get("id") or d.get("_id") or ""),               # U ID
-        (cts[0].get("id") if cts else "") or "",              # V ID do Contato
+        (str(cts[0].get("id") or cts[0].get("_id") or "") if cts else ""),  # V ID do Contato
     ]
 
 
@@ -906,6 +945,9 @@ def main():
     log.info("Config: drive=%s... file_id=%s path=%s", DRIVE_ID[:12], FILE_ID or "(vazio)", FILE_PATH)
     if PIPES_D:
         listar_pipelines()
+        return
+    if BRUTO_PV:
+        bruto_prevendas()
         return
     if CAMPOS_PV:
         campos_prevendas()
