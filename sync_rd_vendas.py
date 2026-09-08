@@ -264,7 +264,7 @@ def norm(v):
 S = requests.Session()
 SAFETY_DAYS = int(os.environ.get("SAFETY_DAYS", "540"))
 LOOKBACK = int(os.environ.get("LOOKBACK_ROWS", "800"))   # 0 = ler a planilha inteira
-MAX_UPD  = int(os.environ.get("MAX_UPDATES", "60"))
+MAX_UPD  = int(os.environ.get("MAX_UPDATES", "200"))
 MARCAR_REV = os.environ.get("MARCAR_REVERTIDAS", "1") not in ("0", "false", "")      # teto por execucao; o resto vai no proximo ciclo
 
 
@@ -1615,7 +1615,7 @@ def sincronizar_marcacoes(tk):
             if 0 < f < 1:
                 m = round(f * 1440)
                 return f"{m//60:02d}:{m%60:02d}"
-        return str(x)[:30]
+        return str(x)[:30] + " [texto]"
 
     if MAX_UPD and len(atualiza) > MAX_UPD:
         log.warning("Feegow: %s atualizacoes pendentes, processando %s", len(atualiza), MAX_UPD)
