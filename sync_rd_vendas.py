@@ -1302,6 +1302,8 @@ def main():
     COLS = {0: "Nome", 1: "Etapa", 2: "Valor", 3: "Criacao", 4: "Fechamento", 5: "Fonte",
             6: "Responsavel", 7: "Produtos", 8: "Meio", 9: "Avaliador", 10: "MesAval",
             I_CIR: "DataCirurgia", I_MARC: "CirurgiaMarcada"}
+    if I_FEE >= 0:
+        COLS[I_FEE] = "IDFeegow"
     ws = f"{WB}/worksheets('{SHEET}')"
     def mostra(x):
         if x is None or x == "":
@@ -1311,7 +1313,7 @@ def main():
         return str(x)[:30]
 
     for linha, l, dif, falta_id, origem, antes in atualizar:
-        campos = ", ".join(f"{COLS[i]}: {mostra(antes[i] if i < len(antes) else None)} -> {mostra(l[i])}"
+        campos = ", ".join(f"{COLS.get(i, 'col'+str(i))}: {mostra(antes[i] if i < len(antes) else None)} -> {mostra(l[i])}"
                            for i in dif) or "-"
         if DRYRUN:
             log.info("  DRY linha %s [%s] (%s): %s%s", linha, origem, str(l[0])[:26], campos,
