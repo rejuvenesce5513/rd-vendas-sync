@@ -1380,7 +1380,8 @@ def sincronizar_prevendas(tk):
         if DRYRUN:
             log.info("  DRY pv linha %s: %s", lin, det)
             continue
-        g("PATCH", f"{ws}/range(address='A{lin}:V{lin}')", tk, json={"values": [l]})
+        g("PATCH", f"{ws}/range(address='A{lin}:V{lin}')", tk,
+          json={"values": [mesclar(antes, l, dif, 22)]})
         log.info("  pv linha %s: %s", lin, det[:160])
     if novas and not DRYRUN:
         ini = total + 1
@@ -1395,6 +1396,18 @@ def sincronizar_prevendas(tk):
 
 
 # ─── sincronizacao da aba Marcacoes a partir do Feegow ────────────────────────
+def mesclar(atual, novo, dif, largura):
+    """Escreve so o que mudou: parte da linha existente e troca as posicoes de dif.
+    Sem isso, gravar um intervalo apaga as colunas que este sync nao preenche."""
+    saida = list(atual)[:largura]
+    while len(saida) < largura:
+        saida.append("")
+    for i in dif:
+        if i < largura:
+            saida[i] = novo[i]
+    return saida
+
+
 def fg_mapa(caminho, chaveId, chaveNome):
     j = fg_get(caminho)
     m = {}
@@ -1545,6 +1558,7 @@ def sincronizar_marcacoes(tk):
             nomeAtual = str(atual[MC["paciente"]] or "").strip() if len(atual) > MC["paciente"] else ""
             if not nomeAtual:
                 campos.append(MC["paciente"])
+            DATAS = (MC["data"], MC["hora"], MC["marcado"], MC["realizado"])
             for i in campos:
                 novo = linha[i]
                 velho = atual[i] if i < len(atual) else None
@@ -1552,7 +1566,13 @@ def sincronizar_marcacoes(tk):
                     continue               # nunca apaga campo preenchido
                 if isinstance(novo, (int, float)) or isinstance(velho, (int, float)):
                     try:
-                        if abs(float(novo or 0) - float(velho or 0)) <= 1e-9:
+                        a1, b1 = float(novo or 0), float(velho or 0)
+                        # datas e horas sao gravadas com precisao de minuto:
+                        # comparar em fracao de dia acusa diferenca de segundos que nao existe
+                        if i in DATAS:
+                            if round(a1 * 1440) == round(b1 * 1440):
+                                continue
+                        elif abs(a1 - b1) <= 1e-9:
                             continue
                     except Exception:
                         pass
@@ -1606,7 +1626,8 @@ def sincronizar_marcacoes(tk):
         if DRYRUN:
             log.info("  DRY mc linha %s (%s): %s", lin, str(l[MC['paciente']])[:24], det)
             continue
-        g("PATCH", f"{ws}/range(address='A{lin}:O{lin}')", tk, json={"values": [l]})
+        g("PATCH", f"{ws}/range(address='A{lin}:O{lin}')", tk,
+          json={"values": [mesclar(antes, l, dif, MC_LARG)]})
         log.info("  mc linha %s: %s", lin, det[:150])
     if novas:
         if DRYRUN:
@@ -1806,10 +1827,14 @@ def main():
             continue
         if any(i <= 10 for i in dif):
             g("PATCH", f"{ws}/range(address='A{linha}:K{linha}')", tk,
-              json={"values": [l[:11]]})
+              json={"values": [mesclar(antes, l, [i for i in dif if i <= 10], 11)]})
         if any(i in (I_CIR, I_MARC) for i in dif):
+            cir = [antes[I_CIR] if I_CIR < len(antes) else "",
+                   antes[I_MARC] if I_MARC < len(antes) else ""]
+            if I_CIR in dif:  cir[0] = l[I_CIR]
+            if I_MARC in dif: cir[1] = l[I_MARC]
             g("PATCH", f"{ws}/range(address='{COL_CIR_L}{linha}:{COL_MARC_L}{linha}')", tk,
-              json={"values": [[l[I_CIR], l[I_MARC]]]})
+              json={"values": [cir]})
         if falta_id:
             g("PATCH", f"{ws}/range(address='{COL_ID_L}{linha}')", tk, json={"values": [[l[I_ID]]]})
         if I_FEE >= 0 and I_FEE in dif:
