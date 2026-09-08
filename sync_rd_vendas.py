@@ -1539,8 +1539,13 @@ def sincronizar_marcacoes(tk):
         else:
             lin, atual = existente
             dif = []
-            for i in (MC["data"], MC["hora"], MC["tipo"], MC["prof"], MC["status"],
-                      MC["agendou"], MC["marcado"], MC["realizado"], MC["idPac"], MC["paciente"]):
+            campos = [MC["data"], MC["hora"], MC["tipo"], MC["prof"], MC["status"],
+                      MC["agendou"], MC["marcado"], MC["realizado"], MC["idPac"]]
+            # o nome do Feegow as vezes e mais curto que o da planilha: so preenche vazio
+            nomeAtual = str(atual[MC["paciente"]] or "").strip() if len(atual) > MC["paciente"] else ""
+            if not nomeAtual:
+                campos.append(MC["paciente"])
+            for i in campos:
                 novo = linha[i]
                 velho = atual[i] if i < len(atual) else None
                 if novo in (None, "") and velho not in (None, ""):
@@ -1585,7 +1590,8 @@ def sincronizar_marcacoes(tk):
         if isinstance(x, (int, float)):
             f = float(x)
             if 20000 < f < 80000:
-                return (EPOCH + dt.timedelta(days=int(f))).strftime("%d/%m/%Y")
+                d0 = EPOCH + dt.timedelta(days=f)
+                return d0.strftime("%d/%m/%Y %H:%M" if abs(f - int(f)) > 1e-9 else "%d/%m/%Y")
             if 0 < f < 1:
                 m = round(f * 1440)
                 return f"{m//60:02d}:{m%60:02d}"
