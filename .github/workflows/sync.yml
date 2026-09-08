@@ -9,7 +9,7 @@ on:
         description: "O que executar"
         type: choice
         default: gravar
-        options: [gravar, dry-run, campos, diagnostico, listar]
+        options: [gravar, dry-run, pipelines, campos-pv, pv-dry, prevendas, campos, diagnostico, listar]
 
 permissions:
   contents: read
@@ -43,6 +43,10 @@ jobs:
             campos)  python sync_rd_vendas.py --campos  ;;
             listar)  python sync_rd_vendas.py --listar  ;;
             dry-run) python sync_rd_vendas.py --dry-run ;;
+            pipelines)  python sync_rd_vendas.py --pipelines  ;;
+            campos-pv)  python sync_rd_vendas.py --campos-pv  ;;
+            prevendas)  python sync_rd_vendas.py --prevendas  ;;
+            pv-dry)     python sync_rd_vendas.py --prevendas --dry-run ;;
             *)       python sync_rd_vendas.py           ;;
           esac
         env:
@@ -63,3 +67,17 @@ jobs:
           COL_CIR_MARCADA:       "N"    # Data Cirurgia foi marcada?
           LER_ATE:               "N"    # ultima coluna lida
           FORMULA_RANGES:        ""     # nao ha mais colunas calculadas
+
+          # --- aba Prevendas ---
+          SHEET_PV:              "Prevendas"
+          CUTOFF_PV:             "2026-08-01"
+          PIPELINE_PV:           ""       # id do funil de pre-vendas (--pipelines mostra)
+          PIPELINE_PV_NOME:      "PRE"    # ou trecho do nome, se o id ficar vazio
+          CF_PV_PRIMEIRO:        ""       # --campos-pv mostra os ids
+          CF_PV_ULTIMO:          ""
+          CF_PV_AGENDOU:         ""
+          CF_PV_REALIZADA:       ""
+          CF_PV_MEIO:            "6740c07d840a380026d05b3e"
+          CF_PV_AVALIADOR:       "691b0d0ab5e2d0001db1085d"
+          CF_PV_DATA_AVAL:       "691e0f68034fef0015ca1a3f"
+          CF_PV_FEEGOW:          "6a6b5afb84ec2f001de5df5a"
