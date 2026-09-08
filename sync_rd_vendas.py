@@ -42,6 +42,9 @@ PIPES_D = "--pipelines" in sys.argv
 CAMPOS_PV = "--campos-pv" in sys.argv
 BRUTO_PV  = "--bruto-pv" in sys.argv
 FEEGOW_D  = "--feegow" in sys.argv
+FEEGOW_BF = "--feegow-backfill" in sys.argv
+FG_PROC   = "--feegow-procedimentos" in sys.argv
+FG_AGENDA = "--feegow-agenda" in sys.argv
 SO_PV   = "--prevendas" in sys.argv
 SEM_PV  = "--sem-prevendas" in sys.argv
 CAMPOS  = "--campos" in sys.argv
@@ -84,6 +87,85 @@ I_FEE     = (ord(COL_FEE_L) - 65) if COL_FEE_L else -1
 CF_FEEGOW = os.environ.get("CF_ID_FEEGOW", "6a6b5afb84ec2f001de5df5a")
 
 LARGURA = max(I_ID, I_CIR, I_MARC, I_FEE) + 1
+
+# ─── Feegow: aba Marcacoes ────────────────────────────────────────────────────
+FG_TOKEN  = os.environ.get("FEEGOW_TOKEN", "")
+FG_URL    = "https://api.feegow.com/v1/api"
+SHEET_MC  = os.environ.get("SHEET_MARCACOES", "Marcações")
+FG_PROCS  = [x.strip() for x in os.environ.get("FEEGOW_PROCEDIMENTOS", "1,3,16").split(",") if x.strip()]
+FG_DIAS_TRAS = int(os.environ.get("FEEGOW_DIAS_TRAS", "30"))
+FG_DIAS_FRENTE = int(os.environ.get("FEEGOW_DIAS_FRENTE", "90"))
+FG_ST_ATENDIDO = os.environ.get("FEEGOW_STATUS_ATENDIDO", "Atendido")
+FG_MAX_NOMES = int(os.environ.get("FEEGOW_MAX_NOMES", "60"))
+# colunas da aba Marcacoes (A..O)
+MC = {"data": 0, "hora": 1, "paciente": 2, "idPac": 3, "tipo": 4, "prof": 5,
+      "status": 6, "agendou": 7, "marcado": 8, "realizado": 9, "evento": 10,
+      "idAgd": 11, "vendPre": 12, "vendCom": 13, "abertoCom": 14}
+MC_LARG = 15
+
+
+def fg_get(caminho, params=None, tolerante=False):
+    if not FG_TOKEN:
+        raise RuntimeError("FEEGOW_TOKEN nao configurado")
+    url = FG_URL + caminho
+    for tent, espera in enumerate(ESPERAS):
+        try:
+            r = S.get(url, params=params or {}, headers={"x-access-token": FG_TOKEN}, timeout=90)
+        except Exception as e:
+            log.warning("  feegow %s: conexao %s — aguardando %ss", caminho, str(e)[:80], espera)
+            time.sleep(espera); continue
+        if r.ok:
+            time.sleep(0.3)
+            try:
+                j = r.json()
+            except Exception:
+                log.error("  feegow %s: resposta nao-JSON", caminho)
+                return None
+            if isinstance(j, dict) and j.get("success") is False:
+                log.warning("  feegow %s: success=false — %s", caminho, str(j.get("content"))[:120])
+                return None if tolerante else j
+            return j
+        if r.status_code in (429, 500, 502, 503, 504):
+            log.warning("  feegow %s: HTTP %s — aguardando %ss", caminho, r.status_code, espera)
+            time.sleep(espera); continue
+        log.error("  feegow %s: HTTP %s — %s", caminho, r.status_code, r.text[:160])
+        return None
+    return None
+
+
+def fg_conteudo(j):
+    if isinstance(j, dict):
+        c = j.get("content")
+        return c if isinstance(c, list) else ([c] if isinstance(c, dict) else [])
+    return j if isinstance(j, list) else []
+
+
+def fg_procedimentos():
+    """Lista os procedimentos e destaca os que serao importados."""
+    j = fg_get("/procedures/list")
+    itens = fg_conteudo(j)
+    if not itens:
+        log.error("Nao consegui listar procedimentos. Confira o FEEGOW_TOKEN.")
+        return
+    alvo = set(FG_PROCS)
+    log.info("%s procedimento(s) cadastrados. Marcados com >>> serao importados:", len(itens))
+    for it in itens:
+        pid = str(it.get("procedimento_id") or it.get("id") or "")
+        nome = it.get("nome") or it.get("procedimento") or ""
+        if pid in alvo:
+            log.info("  >>> %-6s %s", pid, nome)
+    log.info("--- demais (amostra) ---")
+    n = 0
+    for it in itens:
+        pid = str(it.get("procedimento_id") or it.get("id") or "")
+        if pid in alvo:
+            continue
+        log.info("      %-6s %s", pid, (it.get("nome") or it.get("procedimento") or "")[:52])
+        n += 1
+        if n >= 15:
+            log.info("      ... e mais %s", len(itens) - len(alvo) - n)
+            break
+
 
 # ─── aba Prevendas ────────────────────────────────────────────────────────────
 SHEET_PV   = os.environ.get("SHEET_PV", "Prevendas")
@@ -302,6 +384,114 @@ def bruto_prevendas():
             break
         params = {"limit": 200, "next_page": nxt}
     log.warning("Nenhum negocio de pre-vendas encontrado.")
+
+
+def _chaves_da_linha(v, cut):
+    """Mesmas chaves do sync, mas com corte proprio (o backfill olha mais para tras)."""
+    try:
+        e = v[4]
+        if e in (None, ""):
+            return None, None
+        d = e if isinstance(e, dt.date) else EPOCH + dt.timedelta(days=int(float(e)))
+        if d < cut:
+            return None, None
+        sk = f"{norm(v[0])}|{d.isoformat()}|{norm(v[7])}"
+        cs = f"{d.isoformat()}|{round(float(v[2] or 0), 2)}|{norm(v[7])}|{norm(v[6])}"
+        return sk, cs
+    except Exception:
+        return None, None
+
+
+def backfill_feegow():
+    """Preenche SO a coluna do ID Feegow em linhas antigas. Nunca insere,
+    nunca sobrescreve valor existente, nunca toca em outra coluna."""
+    if I_FEE < 0:
+        log.error("Configure COL_FEEGOW antes de rodar o backfill.")
+        return
+    de = dt.date.fromisoformat(os.environ.get("FEEGOW_DE", "2026-06-01"))
+    ate = dt.date.fromisoformat(os.environ.get("FEEGOW_ATE", CUTOFF.isoformat()))
+    cf = CF_FEEGOW
+    colL = chr(65 + I_FEE)
+    log.info("Backfill do ID Feegow: fechamentos de %s a %s (exclusivo) | coluna %s", de, ate, colL)
+
+    # ---- 1. negocios do RD no intervalo ----
+    base = {"limit": 200, "win": "true", "closed_at_period": "true",
+            "start_date": de.isoformat(), "end_date": ate.isoformat()}
+    deals, pag = [], 1
+    while pag <= 80:
+        j = rd_get(dict(base, page=pag), tolerante=True)
+        if not j:
+            break
+        lote = j.get("deals", [])
+        deals.extend(lote)
+        if len(lote) < 200:
+            break
+        pag += 1
+    eleg = [d for d in deals if elegivel_periodo(d, de, ate)]
+    log.info("RD: %s ganho(s) no intervalo | %s no funil comercial", len(deals), len(eleg))
+
+    porId, porSk, porCs = {}, {}, {}
+    semCampo = 0
+    for d in eleg:
+        v = cf_value(d, cf)
+        if v in (None, "", 0):
+            semCampo += 1
+            continue
+        l = linhas_do_deal(d)[0]
+        porId[str(d.get("id") or d.get("_id") or "")] = v
+        sk, cs = _chaves_da_linha(l, de)
+        if sk:
+            porSk.setdefault(sk, v)
+        if cs:
+            porCs.setdefault(cs, v)
+    log.info("Com ID Feegow: %s | sem o campo: %s", len(porId), semCampo)
+
+    # ---- 2. planilha ----
+    tk = token(); resolver_arquivo(tk); abrir_sessao(tk)
+    try:
+        ws = f"{WB}/worksheets('{SHEET}')"
+        ur = g("GET", f"{ws}/usedRange(valuesOnly=true)?$select=rowCount", tk)
+        n = int(ur.get("rowCount") or 0)
+        alvo, jaTem, naoAchou = [], 0, 0
+        CH = 2000
+        for ini in range(2, max(n, 1) + 1, CH):
+            fim = min(n, ini + CH - 1)
+            rg = g("GET", f"{ws}/range(address='A{ini}:{colL}{fim}')?$select=values", tk)
+            for k, v in enumerate(rg.get("values", [])):
+                lin = ini + k
+                if len(v) <= I_FEE:
+                    continue
+                if str(v[I_FEE] or "").strip():
+                    jaTem += 1
+                    continue
+                sk, cs = _chaves_da_linha(v, de)
+                if sk is None:
+                    continue                      # fora do intervalo
+                rid = str(v[I_ID] or "").strip() if len(v) > I_ID else ""
+                val = porId.get(rid) or porSk.get(sk) or porCs.get(cs)
+                if val:
+                    alvo.append((lin, val, v[0]))
+                else:
+                    naoAchou += 1
+        log.info("Linhas no intervalo: %s a preencher | %s ja tinham | %s sem correspondencia",
+                 len(alvo), jaTem, naoAchou)
+        for lin, val, nome in alvo[:8]:
+            log.info("   linha %s (%s) -> %s", lin, str(nome)[:34], val)
+        if DRYRUN:
+            log.info("dry-run: nada gravado.")
+            return
+        for lin, val, nome in alvo:
+            g("PATCH", f"{ws}/range(address='{colL}{lin}')", tk, json={"values": [[val]]})
+        log.info("Backfill concluido: %s linha(s) preenchida(s)", len(alvo))
+    finally:
+        fechar_sessao(tk)
+
+
+def elegivel_periodo(d, de, ate):
+    if not etapa_de_venda(d):
+        return False
+    f = parse_dt(d.get("closed_at"))
+    return bool(f and de <= f < ate)
 
 
 def cobertura_feegow():
@@ -1180,11 +1370,232 @@ def sincronizar_prevendas(tk):
             log.info("  DRY pv nova: %s", l[:6])
 
 
+# ─── sincronizacao da aba Marcacoes a partir do Feegow ────────────────────────
+def fg_mapa(caminho, chaveId, chaveNome):
+    j = fg_get(caminho)
+    m = {}
+    for it in fg_conteudo(j):
+        pid = str(it.get(chaveId) or it.get("id") or "")
+        nome = it.get(chaveNome) or it.get("nome") or ""
+        if pid:
+            m[pid] = str(nome).strip()
+    return m
+
+
+def fg_data_serial(txt):
+    """'07-08-2024' -> serial do Excel"""
+    try:
+        d, m, a = str(txt).split("-")
+        return serial(dt.date(int(a), int(m), int(d)))
+    except Exception:
+        return ""
+
+
+def fg_hora_frac(txt):
+    try:
+        p = str(txt).split(":")
+        return (int(p[0]) * 60 + int(p[1])) / 1440.0
+    except Exception:
+        return ""
+
+
+def fg_dh(txt):
+    """'2024-05-09 18:36:10' -> serial + fracao (sem segundos)"""
+    if not txt:
+        return "", ""
+    try:
+        x = dt.datetime.fromisoformat(str(txt).replace("Z", "").strip())
+        return serial(x.date()), (x.hour * 60 + x.minute) / 1440.0
+    except Exception:
+        return "", ""
+
+
+def fg_buscar_agenda():
+    de = dt.date.today() - dt.timedelta(days=FG_DIAS_TRAS)
+    ate = dt.date.today() + dt.timedelta(days=FG_DIAS_FRENTE)
+    base = {"data_start": de.strftime("%d-%m-%Y"), "data_end": ate.strftime("%d-%m-%Y"),
+            "list_procedures": 1}
+    todos, start, OFF = [], 0, 200
+    while start < 20000:
+        j = fg_get("/appoints/search", dict(base, start=start, offset=OFF))
+        lote = fg_conteudo(j)
+        if not lote:
+            break
+        todos.extend(lote)
+        if len(lote) < OFF:
+            break
+        start += OFF
+        if start % 1000 == 0:
+            log.info("  feegow: %s agendamentos lidos", len(todos))
+    log.info("Feegow: %s agendamento(s) de %s a %s", len(todos), de, ate)
+    return todos
+
+
+def sincronizar_marcacoes(tk):
+    if not FG_TOKEN:
+        log.warning("FEEGOW_TOKEN ausente — pulando a aba %s", SHEET_MC)
+        return
+    ws = f"{WB}/worksheets('{SHEET_MC}')"
+    ur = g("GET", f"{ws}/usedRange(valuesOnly=true)?$select=rowCount", tk)
+    total = int(ur.get("rowCount") or 0)
+
+    porAgd, nomePorId, CH = {}, {}, 2000
+    for ini in range(2, max(total, 1) + 1, CH):
+        fim = min(total, ini + CH - 1)
+        rg = g("GET", f"{ws}/range(address='A{ini}:O{fim}')?$select=values", tk)
+        for k, v in enumerate(rg.get("values", [])):
+            lin = ini + k
+            aid = str(v[MC["idAgd"]]).strip().replace(".0", "") if len(v) > MC["idAgd"] else ""
+            if aid:
+                porAgd[aid] = (lin, v)
+            pid = str(v[MC["idPac"]]).strip().replace(".0", "") if len(v) > MC["idPac"] else ""
+            nm = str(v[MC["paciente"]]).strip() if len(v) > MC["paciente"] else ""
+            if pid and nm:
+                nomePorId.setdefault(pid, nm)
+    log.info("Aba %s: %s linha(s) | %s com ID de agendamento | %s nome(s) em cache",
+             SHEET_MC, max(0, total - 1), len(porAgd), len(nomePorId))
+
+    status = fg_mapa("/appoints/status", "id", "status")
+    procs = fg_mapa("/procedures/list", "procedimento_id", "nome")
+    profs = fg_mapa("/professional/list", "profissional_id", "nome")
+    log.info("Tabelas: %s status | %s procedimentos | %s profissionais",
+             len(status), len(procs), len(profs))
+
+    agenda = fg_buscar_agenda()
+    alvo = set(FG_PROCS)
+    agora = dt.datetime.now()
+    novas, atualiza, semNome, ignorados = [], [], set(), 0
+
+    for a in agenda:
+        aid = str(a.get("agendamento_id") or "")
+        if not aid:
+            continue
+        pid = str(a.get("paciente_id") or "")
+        proc = str(a.get("procedimento_id") or "")
+        existente = porAgd.get(aid)
+        if existente is None and proc not in alvo:
+            ignorados += 1
+            continue                       # fora da lista e nao esta na planilha
+        st = status.get(str(a.get("status_id") or ""), "")
+        dS, hS = fg_data_serial(a.get("data")), fg_hora_frac(a.get("horario"))
+        mkD, mkH = fg_dh(a.get("agendado_em"))
+        nome = nomePorId.get(pid, "")
+        if not nome and existente:
+            nome = str(existente[1][MC["paciente"]] or "").strip()
+        if not nome:
+            semNome.add(pid)
+        linha = [""] * MC_LARG
+        linha[MC["data"]] = dS
+        linha[MC["hora"]] = hS
+        linha[MC["paciente"]] = nome
+        linha[MC["idPac"]] = pid
+        linha[MC["tipo"]] = procs.get(proc, "")
+        linha[MC["prof"]] = profs.get(str(a.get("profissional_id") or ""), "")
+        linha[MC["status"]] = st
+        linha[MC["agendou"]] = (a.get("agendado_por") or "").strip()
+        linha[MC["marcado"]] = mkD
+        linha[MC["idAgd"]] = aid
+        # "Realizado em" nao existe na API: registra quando o sync viu virar Atendido
+        if norm(st) == norm(FG_ST_ATENDIDO):
+            ja = existente and len(existente[1]) > MC["realizado"] and \
+                 str(existente[1][MC["realizado"]] or "").strip()
+            linha[MC["realizado"]] = existente[1][MC["realizado"]] if ja else \
+                serial(agora.date()) + (agora.hour * 60 + agora.minute) / 1440.0
+        if existente is None:
+            novas.append(linha)
+        else:
+            lin, atual = existente
+            dif = []
+            for i in (MC["data"], MC["hora"], MC["tipo"], MC["prof"], MC["status"],
+                      MC["agendou"], MC["marcado"], MC["realizado"], MC["idPac"], MC["paciente"]):
+                novo = linha[i]
+                velho = atual[i] if i < len(atual) else None
+                if novo in (None, "") and velho not in (None, ""):
+                    continue               # nunca apaga campo preenchido
+                if isinstance(novo, (int, float)) or isinstance(velho, (int, float)):
+                    try:
+                        if abs(float(novo or 0) - float(velho or 0)) <= 1e-9:
+                            continue
+                    except Exception:
+                        pass
+                elif norm(novo) == norm(velho):
+                    continue
+                dif.append(i)
+            if dif:
+                atualiza.append((lin, linha, dif, list(atual)))
+
+    log.info("Feegow: %s nova(s) | %s atualizacao(oes) | %s ignorado(s) (fora da lista)",
+             len(novas), len(atualiza), ignorados)
+    if semNome:
+        log.info("Pacientes sem nome em cache: %s (buscando ate %s)", len(semNome), FG_MAX_NOMES)
+        for pid in list(semNome)[:FG_MAX_NOMES]:
+            j = fg_get("/patient/informations", {"paciente_id": pid}, tolerante=True)
+            c = fg_conteudo(j)
+            nm = (c[0].get("nome") if c and isinstance(c[0], dict) else "") or ""
+            if nm:
+                nomePorId[pid] = nm.strip()
+        for l in novas:
+            if not l[MC["paciente"]]:
+                l[MC["paciente"]] = nomePorId.get(l[MC["idPac"]], "")
+        for _, l, dif, _a in atualiza:
+            if not l[MC["paciente"]]:
+                l[MC["paciente"]] = nomePorId.get(l[MC["idPac"]], "")
+
+    COLS_MC = {v: k for k, v in MC.items()}
+
+    def mostraMC(x):
+        if x in (None, ""):
+            return "(vazio)"
+        if isinstance(x, (int, float)):
+            f = float(x)
+            if 20000 < f < 80000:
+                return (EPOCH + dt.timedelta(days=int(f))).strftime("%d/%m/%Y")
+            if 0 < f < 1:
+                m = round(f * 1440)
+                return f"{m//60:02d}:{m%60:02d}"
+        return str(x)[:30]
+
+    if MAX_UPD and len(atualiza) > MAX_UPD:
+        log.warning("Feegow: %s atualizacoes pendentes, processando %s", len(atualiza), MAX_UPD)
+        atualiza = atualiza[:MAX_UPD]
+    for lin, l, dif, antes in atualiza:
+        det = ", ".join(f"{COLS_MC[i]}: {mostraMC(antes[i] if i < len(antes) else None)}"
+                        f" -> {mostraMC(l[i])}" for i in dif)
+        if DRYRUN:
+            log.info("  DRY mc linha %s (%s): %s", lin, str(l[MC['paciente']])[:24], det)
+            continue
+        g("PATCH", f"{ws}/range(address='A{lin}:O{lin}')", tk, json={"values": [l]})
+        log.info("  mc linha %s: %s", lin, det[:150])
+    if novas:
+        if DRYRUN:
+            for l in novas[:10]:
+                log.info("  DRY mc nova: %s | %s | %s | %s", mostraMC(l[0]), mostraMC(l[1]),
+                         str(l[2])[:26], l[6])
+        else:
+            ini = total + 1
+            for k in range(0, len(novas), 50):
+                bloco = novas[k:k + 50]
+                a2, b2 = ini + k, ini + k + len(bloco) - 1
+                g("PATCH", f"{ws}/range(address='A{a2}:O{b2}')", tk, json={"values": bloco})
+                log.info("  mc gravadas %s/%s", min(k + 50, len(novas)), len(novas))
+
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 def main():
     log.info("Config: drive=%s... file_id=%s path=%s", DRIVE_ID[:12], FILE_ID or "(vazio)", FILE_PATH)
     if PIPES_D:
         listar_pipelines()
+        return
+    if FG_PROC:
+        fg_procedimentos()
+        return
+    if FG_AGENDA:
+        tk0 = token(); resolver_arquivo(tk0); abrir_sessao(tk0)
+        try: sincronizar_marcacoes(tk0)
+        finally: fechar_sessao(tk0)
+        return
+    if FEEGOW_BF:
+        backfill_feegow()
         return
     if FEEGOW_D:
         cobertura_feegow()
@@ -1384,6 +1795,9 @@ def main():
     if not SEM_PV:
         try: sincronizar_prevendas(tk)
         except Exception as e: log.error("Pre-vendas falhou: %s", str(e)[:200])
+    if FG_TOKEN:
+        try: sincronizar_marcacoes(tk)
+        except Exception as e: log.error("Marcacoes/Feegow falhou: %s", str(e)[:200])
     fechar_sessao(tk)
     log.info("OK — %s linhas inseridas", len(inserir_agora))
 
