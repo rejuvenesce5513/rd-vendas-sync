@@ -83,9 +83,10 @@ LARGURA = max(I_ID, I_CIR, I_MARC) + 1
 # ─── aba Prevendas ────────────────────────────────────────────────────────────
 SHEET_PV   = os.environ.get("SHEET_PV", "Prevendas")
 TABLE_PV   = os.environ.get("TABLE_PV", "")           # vazio = grava por intervalo
-PIPE_PV    = os.environ.get("PIPELINE_PV", "")        # id do funil, se a API devolver
+PIPE_PV    = os.environ.get("PIPELINE_PV", "6706cd6fb3284c0025da0e80")  # PRE-VENDAS
 PIPE_PV_NM = os.environ.get("PIPELINE_PV_NOME", "")   # ou trecho do nome
 # a API nao devolve o funil na listagem: identificamos pelo nome da etapa
+PV_DETALHE = int(os.environ.get("PV_DETALHE_MAX", "0"))   # 0 = nao busca detalhe
 ETAPAS_PV  = os.environ.get("ETAPAS_PV",
     "NOVO CONTATO,QUALIFICACAO E INTERESSE,AVALIACAO,REALIZADAS,NO SHOW,DIA 1,DIA 2,DIA 3,DIA 4,DIA 5,DIA 6,DIA 7")
 CUTOFF_PV  = dt.date.fromisoformat(os.environ.get("CUTOFF_PV", os.environ.get("CUTOFF_DATE", "2026-08-01")))
@@ -775,15 +776,44 @@ def estado_pt(d):
     return "Em Andamento"
 
 
+def primeiro_contato(d):
+    """A API nao tem esse campo. Usa o campo personalizado, se houver, ou a saida
+    da primeira etapa registrada em deal_stage_histories (vem so no detalhe)."""
+    if CF_PV["primeiro"]:
+        v = cf_value(d, CF_PV["primeiro"])
+        if v:
+            return v
+    hs = d.get("deal_stage_histories") or []
+    fim = [h.get("end_date") for h in hs if h.get("end_date")]
+    return min(fim) if fim else None
+
+
+PV_PREFIXO = os.environ.get("PV_PREFIXO", r"^\s*Pr[eé]-?\s*vendas\s*-\s*[^-]*-\s*")
+
+
+def nome_prevenda(d):
+    """A aba usa o nome do paciente; a negociacao vem com prefixo do funil."""
+    cts = d.get("contacts") or []
+    n = (cts[0].get("name") if cts else "") or ""
+    if n.strip():
+        return n.strip()
+    bruto = (d.get("name") or "").strip()
+    try:
+        return re.sub(PV_PREFIXO, "", bruto, flags=re.I).strip() or bruto
+    except Exception:
+        return bruto
+
+
 def linha_prevenda(d):
     cri = _dh(d.get("created_at"))
-    pri = _dh(cf_value(d, CF_PV["primeiro"]) if CF_PV["primeiro"] else None)
-    ult = _dh(cf_value(d, CF_PV["ultimo"]) if CF_PV["ultimo"] else None)
+    pri = _dh(primeiro_contato(d))
+    ult = _dh((cf_value(d, CF_PV["ultimo"]) if CF_PV["ultimo"] else None)
+              or d.get("last_activity_at"))
     fec = _dh(d.get("closed_at"))
     cts = d.get("contacts") or []
     perda = (d.get("deal_lost_reason") or {}).get("name") or ""
     return [
-        (d.get("name") or "").strip(),                        # A Nome
+        nome_prevenda(d),                                     # A Nome
         nome_etapa(d),                                        # B Etapa
         estado_pt(d),                                         # C Estado
         perda,                                                # D Motivo de Perda
@@ -879,6 +909,29 @@ def buscar_prevendas():
     return eleg
 
 
+def enriquecer(deals, faltantes):
+    """Busca o detalhe so dos negocios sem primeiro contato, com teto por execucao."""
+    if not PV_DETALHE:
+        return
+    alvo = [d for d in deals if id_do(d) in faltantes][:PV_DETALHE]
+    if not alvo:
+        return
+    log.info("Buscando detalhe de %s negocio(s) para achar o primeiro contato...", len(alvo))
+    ok = 0
+    for d in alvo:
+        det = buscar_deal(id_do(d))
+        if isinstance(det, dict) and det.get("deal_stage_histories"):
+            d["deal_stage_histories"] = det["deal_stage_histories"]
+            if det.get("last_activity_at") and not d.get("last_activity_at"):
+                d["last_activity_at"] = det["last_activity_at"]
+            ok += 1
+    log.info("  detalhe obtido para %s", ok)
+
+
+def id_do(d):
+    return str(d.get("id") or d.get("_id") or "")
+
+
 def sincronizar_prevendas(tk):
     ws = f"{WB}/worksheets('{SHEET_PV}')"
     ur = g("GET", f"{ws}/usedRange(valuesOnly=true)?$select=address,rowCount", tk)
@@ -894,6 +947,11 @@ def sincronizar_prevendas(tk):
     log.info("Aba %s: %s linhas | %s com ID", SHEET_PV, max(0, total - 1), len(existentes))
 
     deals = buscar_prevendas()
+    if PV_DETALHE:
+        semPri = {rid for rid, (lin, v) in existentes.items()
+                  if not (len(v) > 6 and v[6] not in (None, ""))}
+        semPri |= {id_do(d) for d in deals if id_do(d) not in existentes}
+        enriquecer(deals, semPri)
     novas, atualiza = [], []
     for d in deals:
         l = linha_prevenda(d)
