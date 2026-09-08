@@ -87,6 +87,7 @@ PIPE_PV    = os.environ.get("PIPELINE_PV", "6706cd6fb3284c0025da0e80")  # PRE-VE
 PIPE_PV_NM = os.environ.get("PIPELINE_PV_NOME", "")   # ou trecho do nome
 # a API nao devolve o funil na listagem: identificamos pelo nome da etapa
 PV_DETALHE = int(os.environ.get("PV_DETALHE_MAX", "0"))   # 0 = nao busca detalhe
+PV_CONTATO = int(os.environ.get("PV_CONTATO_MAX", "0"))   # 0 = nao busca o ID do contato
 ETAPAS_PV  = os.environ.get("ETAPAS_PV",
     "NOVO CONTATO,QUALIFICACAO E INTERESSE,AVALIACAO,REALIZADAS,NO SHOW,DIA 1,DIA 2,DIA 3,DIA 4,DIA 5,DIA 6,DIA 7")
 CUTOFF_PV  = dt.date.fromisoformat(os.environ.get("CUTOFF_PV", os.environ.get("CUTOFF_DATE", "2026-08-01")))
@@ -159,13 +160,15 @@ MARCAR_REV = os.environ.get("MARCAR_REVERTIDAS", "1") not in ("0", "false", "") 
 ESPERAS = [3, 8, 20, 45, 90]
 
 
-def rd_get(params, tolerante=False):
-    """Chamada ao endpoint de negocios. tolerante=True devolve None em vez de abortar."""
+def rd_get(params, tolerante=False, caminho=None):
+    """Chamada a API do RD. caminho=None usa o endpoint de negocios.
+    tolerante=True devolve None em vez de abortar."""
     p = dict(params); p["token"] = RD_TOKEN
+    url = (RD_URL.rsplit("/deals", 1)[0] + caminho) if caminho else RD_URL
     ultimo = ""
     for tent, espera in enumerate(ESPERAS):
         try:
-            r = S.get(RD_URL, params=p, timeout=90)
+            r = S.get(url, params=p, timeout=90)
         except Exception as e:
             ultimo = f"conexao: {e}"
             log.warning("  tentativa %s falhou (%s) — aguardando %ss", tent + 1, ultimo, espera)
@@ -849,7 +852,8 @@ def linha_prevenda(d):
         serial(parse_dt(cf_value(d, CF_PV["dataAval"]))) or "",  # S Data da avaliacao
         cf_value(d, CF_PV["feegow"]) or "",                   # T ID Feegow
         str(d.get("id") or d.get("_id") or ""),               # U ID
-        (str(cts[0].get("id") or cts[0].get("_id") or "") if cts else ""),  # V ID do Contato
+        (d.get("_contato_id")
+         or (str(cts[0].get("id") or cts[0].get("_id") or "") if cts else "")),  # V ID do Contato
     ]
 
 
@@ -928,6 +932,41 @@ def buscar_prevendas():
     return eleg
 
 
+def contato_do_deal(rid):
+    """GET /deals/{id}/contacts — a listagem de negocios nao traz o id do contato."""
+    try:
+        j = rd_get({}, caminho=f"/deals/{rid}/contacts")
+    except Exception:
+        return ""
+    if isinstance(j, dict):
+        lista = j.get("contacts") or j.get("data") or []
+    elif isinstance(j, list):
+        lista = j
+    else:
+        return ""
+    for c in lista:
+        cid = c.get("id") or c.get("_id") or ""
+        if cid:
+            return str(cid)
+    return ""
+
+
+def enriquecer_contatos(deals, faltantes):
+    if not PV_CONTATO:
+        return
+    alvo = [d for d in deals if id_do(d) in faltantes][:PV_CONTATO]
+    if not alvo:
+        return
+    log.info("Buscando o ID do contato de %s negocio(s)...", len(alvo))
+    ok = 0
+    for d in alvo:
+        cid = contato_do_deal(id_do(d))
+        if cid:
+            d["_contato_id"] = cid
+            ok += 1
+    log.info("  id do contato obtido para %s", ok)
+
+
 def enriquecer(deals, faltantes):
     """Busca o detalhe so dos negocios sem primeiro contato, com teto por execucao."""
     if not PV_DETALHE:
@@ -971,6 +1010,11 @@ def sincronizar_prevendas(tk):
                   if not (len(v) > 6 and v[6] not in (None, ""))}
         semPri |= {id_do(d) for d in deals if id_do(d) not in existentes}
         enriquecer(deals, semPri)
+    if PV_CONTATO:
+        semCt = {rid for rid, (lin, v) in existentes.items()
+                 if not (len(v) > 21 and v[21] not in (None, ""))}
+        semCt |= {id_do(d) for d in deals if id_do(d) not in existentes}
+        enriquecer_contatos(deals, semCt)
     novas, atualiza = [], []
     for d in deals:
         l = linha_prevenda(d)
