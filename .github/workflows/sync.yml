@@ -76,7 +76,8 @@ jobs:
           ETAPAS_PV:             "NOVO CONTATO,QUALIFICACAO E INTERESSE,AVALIACAO,REALIZADAS,NO SHOW,DIA 1,DIA 2,DIA 3,DIA 4,DIA 5,DIA 6,DIA 7"
           CF_PV_PRIMEIRO:        ""       # nao existe na API: derivado do historico de etapas
           CF_PV_ULTIMO:          ""       # nao existe: usa last_activity_at
-          PV_DETALHE_MAX:        "80"     # busca o detalhe de ate N negocios por ciclo
+          PV_DETALHE_MAX:        "80"     # detalhe (primeiro contato) de ate N negocios por ciclo
+          PV_CONTATO_MAX:        "80"     # ID do contato de ate N negocios por ciclo (0 desliga)
           CF_PV_AGENDOU:         "6740c0264636ba001da07a13"
           CF_PV_REALIZADA:       "68a4b62611150a0014b02f4b"
           CF_PV_MEIO:            "6740c07d840a380026d05b3e"
