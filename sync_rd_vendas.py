@@ -38,6 +38,10 @@ THREADS = int(os.environ.get("THREADS", "12"))
 DRYRUN  = "--dry-run" in sys.argv
 LISTAR  = "--listar" in sys.argv
 DIAG    = "--diagnostico" in sys.argv
+PIPES_D = "--pipelines" in sys.argv
+CAMPOS_PV = "--campos-pv" in sys.argv
+SO_PV   = "--prevendas" in sys.argv
+SEM_PV  = "--sem-prevendas" in sys.argv
 CAMPOS  = "--campos" in sys.argv
 
 RD_URL = "https://crm.rdstation.com/api/v1/deals"
@@ -74,6 +78,23 @@ FORMULAS   = [tuple(x.split(":")) for x in
 
 I_ID, I_CIR, I_MARC = _idx(COL_ID_L), _idx(COL_CIR_L), _idx(COL_MARC_L)
 LARGURA = max(I_ID, I_CIR, I_MARC) + 1
+
+# ─── aba Prevendas ────────────────────────────────────────────────────────────
+SHEET_PV   = os.environ.get("SHEET_PV", "Prevendas")
+TABLE_PV   = os.environ.get("TABLE_PV", "")           # vazio = grava por intervalo
+PIPE_PV    = os.environ.get("PIPELINE_PV", "")        # id do funil de pre-vendas
+PIPE_PV_NM = os.environ.get("PIPELINE_PV_NOME", "PRE")  # ou trecho do nome
+CUTOFF_PV  = dt.date.fromisoformat(os.environ.get("CUTOFF_PV", os.environ.get("CUTOFF_DATE", "2026-08-01")))
+CF_PV = {
+    "primeiro":  os.environ.get("CF_PV_PRIMEIRO", ""),
+    "ultimo":    os.environ.get("CF_PV_ULTIMO", ""),
+    "agendou":   os.environ.get("CF_PV_AGENDOU", ""),
+    "meio":      os.environ.get("CF_PV_MEIO", "6740c07d840a380026d05b3e"),
+    "realizada": os.environ.get("CF_PV_REALIZADA", ""),
+    "avaliador": os.environ.get("CF_PV_AVALIADOR", "691b0d0ab5e2d0001db1085d"),
+    "dataAval":  os.environ.get("CF_PV_DATA_AVAL", "691e0f68034fef0015ca1a3f"),
+    "feegow":    os.environ.get("CF_PV_FEEGOW", "6a6b5afb84ec2f001de5df5a"),
+}
 IDX_CMP = list(range(11)) + [I_CIR, I_MARC]
 
 
@@ -166,6 +187,70 @@ def rd_get(params, tolerante=False):
         return None
     raise SystemExit(f"ERRO RD: sem resposta valida apos {len(ESPERAS)} tentativas.\n"
                      f"Ultima: {ultimo}")
+
+
+def listar_pipelines():
+    """Descobre os funis e as etapas de cada um."""
+    vistos = {}
+    params = {"limit": 200}
+    for _ in range(6):
+        j = rd_get(params)
+        if not j:
+            break
+        lote = j.get("deals", [])
+        if not lote:
+            break
+        for d in lote:
+            pl = d.get("deal_pipeline") or {}
+            pid = pl.get("id") or pl.get("_id") or "?"
+            nome = pl.get("name") or "(sem nome)"
+            et = (d.get("deal_stage") or {}).get("name") or "?"
+            vistos.setdefault((pid, nome), {})
+            vistos[(pid, nome)][et] = vistos[(pid, nome)].get(et, 0) + 1
+        nxt = j.get("next_page")
+        if not nxt or not j.get("has_more"):
+            break
+        params = {"limit": 200, "next_page": nxt}
+    log.info("Funis encontrados (amostra das primeiras paginas):")
+    for (pid, nome), etapas in sorted(vistos.items(), key=lambda x: -sum(x[1].values())):
+        log.info("  %-26s id=%s", nome[:26], pid)
+        for e, n in sorted(etapas.items(), key=lambda x: -x[1]):
+            log.info("        %-34s %s", e[:34], n)
+
+
+def campos_prevendas():
+    """Mostra os campos personalizados de negocios do funil de pre-vendas."""
+    alvo = norm(PIPE_PV_NM)
+    params, achados = {"limit": 200}, 0
+    for _ in range(8):
+        j = rd_get(params)
+        if not j:
+            break
+        for d in j.get("deals", []):
+            pl = d.get("deal_pipeline") or {}
+            pid = pl.get("id") or pl.get("_id") or ""
+            if PIPE_PV:
+                if pid != PIPE_PV:
+                    continue
+            elif alvo not in norm(pl.get("name")):
+                continue
+            log.info("=== %s | etapa %s | estado win=%s", d.get("name"),
+                     nome_etapa(d), d.get("win"))
+            for c in d.get("deal_custom_fields", []):
+                cid = c.get("custom_field_id") or (c.get("custom_field") or {}).get("_id")
+                lab = (c.get("custom_field") or {}).get("label") or c.get("label") or ""
+                log.info("    %-26s %-34s = %r", cid, lab[:34], c.get("value"))
+            log.info("    contatos: %r", [(x.get("id"), x.get("name")) for x in (d.get("contacts") or [])][:2])
+            achados += 1
+            if achados >= 3:
+                return
+        nxt = j.get("next_page")
+        if not nxt:
+            break
+        params = {"limit": 200, "next_page": nxt}
+    if not achados:
+        log.warning("Nenhum negocio encontrado no funil '%s'. Rode --pipelines para ver os nomes.",
+                    PIPE_PV or PIPE_PV_NM)
 
 
 def diagnostico():
@@ -626,9 +711,190 @@ def inserir(tk, linhas, modelo):
                     ini, fim, TABLE, nova_ultima)
 
 
+# ─── sincronizacao da aba Prevendas ───────────────────────────────────────────
+def _dh(iso):
+    """devolve (serial da data, fracao do dia) para gravar em colunas separadas"""
+    if not iso:
+        return "", ""
+    t = str(iso).replace("Z", "+00:00")
+    try:
+        x = dt.datetime.fromisoformat(t)
+    except Exception:
+        d = parse_dt(iso)
+        return (serial(d), "") if d else ("", "")
+    return serial(x.date()), round((x.hour * 3600 + x.minute * 60 + x.second) / 86400.0, 10)
+
+
+def estado_pt(d):
+    if d.get("win") is True:
+        return "Vendida"
+    if d.get("win") is False:
+        return "Perdida"
+    return "Em Andamento"
+
+
+def linha_prevenda(d):
+    cri = _dh(d.get("created_at"))
+    pri = _dh(cf_value(d, CF_PV["primeiro"]) if CF_PV["primeiro"] else None)
+    ult = _dh(cf_value(d, CF_PV["ultimo"]) if CF_PV["ultimo"] else None)
+    fec = _dh(d.get("closed_at"))
+    cts = d.get("contacts") or []
+    perda = (d.get("deal_lost_reason") or {}).get("name") or ""
+    return [
+        (d.get("name") or "").strip(),                        # A Nome
+        nome_etapa(d),                                        # B Etapa
+        estado_pt(d),                                         # C Estado
+        perda,                                                # D Motivo de Perda
+        cri[0], cri[1],                                       # E,F criacao
+        pri[0], pri[1],                                       # G,H primeiro contato
+        ult[0], ult[1],                                       # I,J ultimo contato
+        fec[0], fec[1],                                       # K,L fechamento
+        (d.get("deal_source") or {}).get("name") or "",       # M Fonte
+        (d.get("user") or {}).get("name") or "",              # N Responsavel
+        cf_value(d, CF_PV["agendou"]) or "",                  # O Agendou avaliacao?
+        cf_value(d, CF_PV["meio"]) or "",                     # P Meio
+        cf_value(d, CF_PV["realizada"]) or "",                # Q Avaliacao Realizada?
+        cf_value(d, CF_PV["avaliador"]) or "",                # R Avaliador
+        serial(parse_dt(cf_value(d, CF_PV["dataAval"]))) or "",  # S Data da avaliacao
+        cf_value(d, CF_PV["feegow"]) or "",                   # T ID Feegow
+        str(d.get("id") or d.get("_id") or ""),               # U ID
+        (cts[0].get("id") if cts else "") or "",              # V ID do Contato
+    ]
+
+
+def do_funil_pv(d):
+    pl = d.get("deal_pipeline") or {}
+    pid = pl.get("id") or pl.get("_id") or ""
+    if PIPE_PV:
+        return pid == PIPE_PV
+    return norm(PIPE_PV_NM) in norm(pl.get("name"))
+
+
+def buscar_prevendas():
+    """Tenta filtro por periodo de criacao na origem; cai para cursor."""
+    base = {"limit": 200, "created_at_period": "true",
+            "start_date": CUTOFF_PV.isoformat(),
+            "end_date": (dt.date.today() + dt.timedelta(days=2)).isoformat()}
+    j = rd_get(dict(base, page=1), tolerante=True)
+    usa_filtro = False
+    if j:
+        ds = j.get("deals", [])
+        dentro = [x for x in ds if (c := parse_dt(x.get("created_at"))) and c >= CUTOFF_PV - dt.timedelta(days=1)]
+        usa_filtro = bool(ds) and len(dentro) >= len(ds) * 0.8
+    todos = []
+    if usa_filtro:
+        log.info("Pre-vendas: filtro de criacao aceito na origem (total=%s)", j.get("total"))
+        todos = list(j.get("deals", []))
+        pag = 2
+        while len(j.get("deals", [])) == 200 and pag <= 60:
+            j = rd_get(dict(base, page=pag), tolerante=True)
+            if not j:
+                break
+            todos.extend(j.get("deals", []))
+            if len(j.get("deals", [])) < 200:
+                break
+            pag += 1
+    else:
+        log.info("Pre-vendas: usando cursor")
+        params, n, secas = {"limit": 200}, 0, 0
+        while n < 400:
+            j = rd_get(params)
+            if not j:
+                break
+            lote = j.get("deals", [])
+            if not lote:
+                break
+            todos.extend(lote)
+            n += 1
+            cs = [parse_dt(x.get("created_at")) for x in lote]
+            if cs and all(c and c < CUTOFF_PV for c in cs if c):
+                secas += 1
+                if secas >= 2:
+                    break
+            else:
+                secas = 0
+            nxt = j.get("next_page")
+            if not nxt or not j.get("has_more"):
+                break
+            params = {"limit": 200, "next_page": nxt}
+            if n % 20 == 0:
+                log.info("  %s paginas, %s negocios", n, len(todos))
+    eleg = [d for d in todos if do_funil_pv(d)
+            and (c := parse_dt(d.get("created_at"))) and c >= CUTOFF_PV]
+    log.info("Pre-vendas: %s lidos, %s no funil desde %s", len(todos), len(eleg), CUTOFF_PV)
+    return eleg
+
+
+def sincronizar_prevendas(tk):
+    ws = f"{WB}/worksheets('{SHEET_PV}')"
+    ur = g("GET", f"{ws}/usedRange(valuesOnly=true)?$select=address,rowCount", tk)
+    total = int(ur.get("rowCount") or 0)
+    existentes, CH = {}, 2000
+    for ini in range(2, max(total, 1) + 1, CH):
+        fim = min(total, ini + CH - 1)
+        rg = g("GET", f"{ws}/range(address='A{ini}:V{fim}')?$select=values", tk)
+        for j2, v in enumerate(rg.get("values", [])):
+            rid = str(v[20]).strip() if len(v) > 20 and v[20] not in (None, "") else ""
+            if rid:
+                existentes[rid] = (ini + j2, v)
+    log.info("Aba %s: %s linhas | %s com ID", SHEET_PV, max(0, total - 1), len(existentes))
+
+    deals = buscar_prevendas()
+    novas, atualiza = [], []
+    for d in deals:
+        l = linha_prevenda(d)
+        rid = l[20]
+        if not rid:
+            continue
+        alvo = existentes.get(rid)
+        if alvo is None:
+            novas.append(l)
+            continue
+        lin, atual = alvo
+        def igual(a, b):
+            if isinstance(a, (int, float)) or isinstance(b, (int, float)):
+                try:
+                    return abs(float(a or 0) - float(b or 0)) <= 1e-6
+                except Exception:
+                    pass
+            return norm(a) == norm(b)
+        dif = [i for i in range(22)
+               if not igual(l[i], atual[i] if i < len(atual) else None)
+               and not (l[i] in (None, "") and (atual[i] if i < len(atual) else None) not in (None, ""))]
+        if dif:
+            atualiza.append((lin, l, dif))
+
+    if MAX_UPD and len(atualiza) > MAX_UPD:
+        log.warning("Pre-vendas: %s atualizacoes pendentes, processando %s", len(atualiza), MAX_UPD)
+        atualiza = atualiza[:MAX_UPD]
+    log.info("Pre-vendas: %s nova(s) | %s atualizacao(oes)", len(novas), len(atualiza))
+
+    for lin, l, dif in atualiza:
+        if DRYRUN:
+            log.info("  DRY pv linha %s (%s): %s", lin, str(l[0])[:26], ",".join(str(i) for i in dif))
+            continue
+        g("PATCH", f"{ws}/range(address='A{lin}:V{lin}')", tk, json={"values": [l]})
+    if novas and not DRYRUN:
+        ini = total + 1
+        for k in range(0, len(novas), 50):
+            bloco = novas[k:k + 50]
+            a, b = ini + k, ini + k + len(bloco) - 1
+            g("PATCH", f"{ws}/range(address='A{a}:V{b}')", tk, json={"values": bloco})
+            log.info("  pv gravadas %s/%s", min(k + 50, len(novas)), len(novas))
+    elif novas:
+        for l in novas[:15]:
+            log.info("  DRY pv nova: %s", l[:6])
+
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 def main():
     log.info("Config: drive=%s... file_id=%s path=%s", DRIVE_ID[:12], FILE_ID or "(vazio)", FILE_PATH)
+    if PIPES_D:
+        listar_pipelines()
+        return
+    if CAMPOS_PV:
+        campos_prevendas()
+        return
     if CAMPOS:
         for d in [x for x in buscar_deals() if elegivel(x)][:3]:
             log.info("=== %s | fechado %s", d.get("name"), d.get("closed_at"))
@@ -646,6 +912,10 @@ def main():
         return
 
     log.info("CUTOFF %s | aba %s | tabela %s | dry-run=%s", CUTOFF, SHEET, TABLE, DRYRUN)
+
+    if SO_PV:
+        tk0 = token(); resolver_arquivo(tk0); abrir_sessao(tk0)
+        sincronizar_prevendas(tk0); fechar_sessao(tk0); return
 
     deals = buscar_deals()
     elegiveis = [d for d in deals if elegivel(d)]
@@ -805,6 +1075,10 @@ def main():
         inserir(tk, bloco, modelo)
         log.info("  gravadas %s/%s", min(i + 20, len(inserir_agora)), len(inserir_agora))
 
+    fechar_sessao(tk)
+    if not SEM_PV:
+        try: sincronizar_prevendas(tk)
+        except Exception as e: log.error("Pre-vendas falhou: %s", str(e)[:200])
     fechar_sessao(tk)
     log.info("OK — %s linhas inseridas", len(inserir_agora))
 
