@@ -932,22 +932,31 @@ def buscar_prevendas():
     return eleg
 
 
+_CT_DEBUG = [0]
+
+
 def contato_do_deal(rid):
     """GET /deals/{id}/contacts — a listagem de negocios nao traz o id do contato."""
+    import json as _j
     try:
-        j = rd_get({}, caminho=f"/deals/{rid}/contacts")
-    except Exception:
+        j = rd_get({}, caminho=f"/deals/{rid}/contacts", tolerante=True)
+    except Exception as e:
+        if _CT_DEBUG[0] < 2:
+            _CT_DEBUG[0] += 1
+            log.warning("    contato %s: erro %s", rid, str(e)[:120])
         return ""
-    if isinstance(j, dict):
-        lista = j.get("contacts") or j.get("data") or []
-    elif isinstance(j, list):
-        lista = j
-    else:
-        return ""
+    lista = j if isinstance(j, list) else (
+        (j.get("contacts") or j.get("data") or j.get("items") or []) if isinstance(j, dict) else [])
     for c in lista:
-        cid = c.get("id") or c.get("_id") or ""
+        if not isinstance(c, dict):
+            continue
+        cid = c.get("id") or c.get("_id") or c.get("contact_id") or ""
         if cid:
             return str(cid)
+    if _CT_DEBUG[0] < 2:                       # mostra so as 2 primeiras falhas
+        _CT_DEBUG[0] += 1
+        log.warning("    contato %s sem id — resposta: %s", rid,
+                    _j.dumps(j, ensure_ascii=False)[:300] if j is not None else "(vazia)")
     return ""
 
 
