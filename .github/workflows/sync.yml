@@ -9,7 +9,7 @@ on:
         description: "O que executar"
         type: choice
         default: gravar
-        options: [gravar, dry-run, fg-procedimentos, fg-agenda-dry, fg-agenda, feegow, feegow-bf-dry, feegow-bf, pipelines, campos-pv, bruto-pv, pv-dry, prevendas, campos, diagnostico, listar]
+        options: [gravar, dry-run, fg-procedimentos, fg-agenda-dry, fg-agenda, cirurgias-diag, cirurgias-dry, cirurgias, feegow, feegow-bf-dry, feegow-bf, pipelines, campos-pv, bruto-pv, pv-dry, prevendas, campos, diagnostico, listar]
 
 permissions:
   contents: read
@@ -52,6 +52,9 @@ jobs:
             fg-procedimentos) python sync_rd_vendas.py --feegow-procedimentos ;;
             fg-agenda-dry) python sync_rd_vendas.py --feegow-agenda --dry-run ;;
             fg-agenda)     python sync_rd_vendas.py --feegow-agenda ;;
+            cirurgias-diag) python sync_rd_vendas.py --cirurgias-diag ;;
+            cirurgias-dry) python sync_rd_vendas.py --cirurgias --dry-run ;;
+            cirurgias)     python sync_rd_vendas.py --cirurgias ;;
             prevendas)  python sync_rd_vendas.py --prevendas  ;;
             pv-dry)     python sync_rd_vendas.py --prevendas --dry-run ;;
             *)       python sync_rd_vendas.py           ;;
@@ -100,6 +103,15 @@ jobs:
           FEEGOW_DIAS_FRENTE:    "90"
           FEEGOW_STATUS_ATENDIDO: "Atendido"
           FEEGOW_MAX_NOMES:      "60"       # buscas de nome de paciente por ciclo
+
+          # --- planilha de Cirurgias (arquivo separado) ---
+          ARQ_CIRURGIAS:         "https://rejuvenesce.sharepoint.com/sites/ClnicaRejuvenesce-Comercial/Documentos%20Compartilhados/Cirurgias.xlsx"
+          SHEET_CIRURGIAS:       "Cirurgias"
+          CIRURGIA_PROCEDIMENTOS: ""        # IDs fixos; vazio usa o termo abaixo
+          CIRURGIA_NOME_CONTEM:  "CIRURGIA"
+          CIRURGIA_STATUS:       "Aguardando,Chamando,Marcado - não confirmado,Aguardando pagamento,Atendido,Em atendimento,Marcado - confirmado"
+          CIRURGIA_DE:           ""         # vazio = 01-01 do ano corrente
+          CIRURGIA_ATE:          "31-12-2026"
 
           FEEGOW_DE:             "2026-06-01"   # backfill: inicio (inclusivo)
           FEEGOW_ATE:            "2026-08-01"   # backfill: fim (exclusivo)
