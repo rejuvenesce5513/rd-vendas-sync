@@ -10,6 +10,7 @@ Colunas L:O sao formulas da planilha e sao replicadas em R1C1 (nunca sobrescrita
 import os, sys, time, logging, datetime as dt
 import re
 import unicodedata
+import base64
 import requests, msal
 
 # ─── configuracao (tudo via Secrets do GitHub) ────────────────────────────────
@@ -45,6 +46,8 @@ FEEGOW_D  = "--feegow" in sys.argv
 FEEGOW_BF = "--feegow-backfill" in sys.argv
 FG_PROC   = "--feegow-procedimentos" in sys.argv
 FG_AGENDA = "--feegow-agenda" in sys.argv
+FG_CIR    = "--cirurgias" in sys.argv
+FG_CIRD   = "--cirurgias-diag" in sys.argv
 SO_PV   = "--prevendas" in sys.argv
 SEM_PV  = "--sem-prevendas" in sys.argv
 CAMPOS  = "--campos" in sys.argv
@@ -189,6 +192,56 @@ def fg_procedimentos():
         if n >= 15:
             log.info("      ... e mais %s", len(itens) - len(alvo) - n)
             break
+
+
+# ─── planilha de Cirurgias (arquivo separado) ─────────────────────────────────
+ARQ_CIR   = os.environ.get("ARQ_CIRURGIAS", "")
+SHEET_CIR = os.environ.get("SHEET_CIRURGIAS", "Cirurgias")
+CIR_PROCS = [x.strip() for x in os.environ.get("CIRURGIA_PROCEDIMENTOS", "").split(",") if x.strip()]
+CIR_NOME  = os.environ.get("CIRURGIA_NOME_CONTEM", "CIRURGIA")
+CIR_STATUS = os.environ.get("CIRURGIA_STATUS",
+    "Aguardando,Chamando,Marcado - não confirmado,Aguardando pagamento,"
+    "Atendido,Em atendimento,Marcado - confirmado")
+CIR_DE  = os.environ.get("CIRURGIA_DE", "")            # vazio = 1o de janeiro do ano corrente
+CIR_ATE = os.environ.get("CIRURGIA_ATE", "31-12-2026")
+# colunas: DATA | ID AGENDAMENTO | PROCEDIMENTO | ID FEEGOW | SITUACAO | VALOR
+CC = {"data": 0, "idAgd": 1, "proc": 2, "idPac": 3, "situacao": 4, "valor": 5}
+CC_LARG = 6
+
+
+def cir_procedimentos_alvo():
+    """IDs de procedimento considerados cirurgia: lista fixa ou nome contendo o termo."""
+    if CIR_PROCS:
+        return set(CIR_PROCS), {}
+    mapa = fg_mapa("/procedures/list", "procedimento_id", "nome")
+    alvo = {pid for pid, nome in mapa.items() if CIR_NOME and CIR_NOME.upper() in norm(nome)}
+    return alvo, mapa
+
+
+def cirurgias_diag():
+    """Mostra quais procedimentos entram como cirurgia e um agendamento cru."""
+    import json as _j
+    alvo, mapa = cir_procedimentos_alvo()
+    if not mapa:
+        mapa = fg_mapa("/procedures/list", "procedimento_id", "nome")
+    log.info("Termo de busca no nome: %r | lista fixa: %s", CIR_NOME, CIR_PROCS or "(vazia)")
+    log.info("Procedimentos que SERAO importados como cirurgia:")
+    for pid in sorted(alvo, key=lambda x: (len(x), x)):
+        log.info("   >>> %-6s %s", pid, mapa.get(pid, ""))
+    if not alvo:
+        log.warning("Nenhum procedimento casou. Lista completa para escolher os IDs:")
+        for pid, nome in sorted(mapa.items(), key=lambda x: x[1]):
+            log.info("       %-6s %s", pid, nome[:60])
+        return
+    de = CIR_DE or f"01-01-{dt.date.today().year}"
+    j = fg_get("/appoints/search", {"data_start": de, "data_end": CIR_ATE,
+                                    "procedimento_id": sorted(alvo)[0], "offset": 3})
+    itens = fg_conteudo(j)
+    log.info("--- exemplo cru de agendamento de cirurgia ---")
+    for it in itens[:2]:
+        log.info("  %s", _j.dumps(it, ensure_ascii=False)[:700])
+    if not itens:
+        log.warning("Nenhum agendamento retornado para o procedimento %s", sorted(alvo)[0])
 
 
 # ─── aba Prevendas ────────────────────────────────────────────────────────────
@@ -1646,6 +1699,152 @@ def sincronizar_marcacoes(tk):
                 log.info("  mc gravadas %s/%s", min(k + 50, len(novas)), len(novas))
 
 
+# ─── sincronizacao da planilha de Cirurgias ───────────────────────────────────
+def sincronizar_cirurgias(tk):
+    if not FG_TOKEN:
+        log.warning("FEEGOW_TOKEN ausente — pulando Cirurgias"); return
+    if not ARQ_CIR:
+        log.warning("ARQ_CIRURGIAS nao configurado — pulando"); return
+    ref = resolver_arquivo_url(tk, ARQ_CIR)
+    wb2 = f"{GRAPH}/drives/{ref['drive']}/items/{ref['item']}/workbook"
+    ws = f"{wb2}/worksheets('{SHEET_CIR}')"
+    log.info("Cirurgias: arquivo %s", ref.get("nome"))
+    guard = SESSAO["id"]; SESSAO["id"] = None      # a sessao global e do outro arquivo
+    try:
+        ur = g("GET", f"{ws}/usedRange(valuesOnly=true)?$select=rowCount", tk)
+        total = int(ur.get("rowCount") or 0)
+        porAgd, CH = {}, 2000
+        for ini in range(2, max(total, 1) + 1, CH):
+            fim = min(total, ini + CH - 1)
+            rg = g("GET", f"{ws}/range(address='A{ini}:F{fim}')?$select=values", tk)
+            for k, v in enumerate(rg.get("values", [])):
+                aid = str(v[CC["idAgd"]]).strip().replace(".0", "") if len(v) > CC["idAgd"] else ""
+                if aid:
+                    porAgd[aid] = (ini + k, v)
+        log.info("Cirurgias: %s linha(s) | %s com ID de agendamento", max(0, total - 1), len(porAgd))
+
+        alvo, mapa = cir_procedimentos_alvo()
+        if not alvo:
+            log.error("Nenhum procedimento de cirurgia identificado. Rode o modo cirurgias-diag.")
+            return
+        status = fg_mapa("/appoints/status", "id", "status")
+        okSt = {norm(x) for x in CIR_STATUS.split(",") if x.strip()}
+        de = CIR_DE or f"01-01-{dt.date.today().year}"
+        log.info("Procedimentos de cirurgia: %s | janela %s a %s", sorted(alvo), de, CIR_ATE)
+
+        agenda, vistos = [], set()
+        for pid in sorted(alvo):
+            start = 0
+            while start < 20000:
+                j = fg_get("/appoints/search", {"data_start": de, "data_end": CIR_ATE,
+                                                "procedimento_id": pid, "start": start, "offset": 200})
+                lote = fg_conteudo(j)
+                if not lote:
+                    break
+                for a in lote:
+                    aid = str(a.get("agendamento_id") or "")
+                    if aid and aid not in vistos:
+                        vistos.add(aid); agenda.append(a)
+                if len(lote) < 200:
+                    break
+                start += 200
+        log.info("Feegow: %s agendamento(s) de cirurgia", len(agenda))
+
+        novas, atualiza, fora = [], [], 0
+        for a in agenda:
+            aid = str(a.get("agendamento_id") or "")
+            st = status.get(str(a.get("status_id") or ""), "")
+            existente = porAgd.get(aid)
+            if norm(st) not in okSt and existente is None:
+                fora += 1; continue
+            linha = [""] * CC_LARG
+            linha[CC["data"]] = fg_data_serial(a.get("data"))
+            linha[CC["idAgd"]] = int(aid) if aid.isdigit() else aid
+            linha[CC["proc"]] = mapa.get(str(a.get("procedimento_id") or ""), "")
+            pid2 = str(a.get("paciente_id") or "")
+            linha[CC["idPac"]] = int(pid2) if pid2.isdigit() else pid2
+            linha[CC["situacao"]] = st
+            val = a.get("valor") or a.get("valor_total") or a.get("preco")
+            linha[CC["valor"]] = toNumF(val) if val not in (None, "") else ""
+            if existente is None:
+                novas.append(linha); continue
+            lin, atual = existente
+            dif = []
+            for i in (CC["data"], CC["proc"], CC["idPac"], CC["situacao"], CC["valor"]):
+                novo, velho = linha[i], (atual[i] if i < len(atual) else None)
+                if novo in (None, "") and velho not in (None, ""):
+                    continue
+                try:
+                    if isinstance(novo, (int, float)) or isinstance(velho, (int, float)):
+                        if abs(float(novo or 0) - float(velho or 0)) <= 1e-6:
+                            continue
+                    elif norm(novo) == norm(velho):
+                        continue
+                except Exception:
+                    if norm(novo) == norm(velho):
+                        continue
+                dif.append(i)
+            if dif:
+                atualiza.append((lin, linha, dif, list(atual)))
+
+        log.info("Cirurgias: %s nova(s) | %s atualizacao(oes) | %s fora dos status", 
+                 len(novas), len(atualiza), fora)
+        COLS_CC = {v: k for k, v in CC.items()}
+
+        def mostraCC(x, col=None):
+            if x in (None, ""): return "(vazio)"
+            if isinstance(x, (int, float)):
+                f = float(x)
+                if col == CC["data"] and 20000 < f < 80000:
+                    return (EPOCH + dt.timedelta(days=int(f))).strftime("%d/%m/%Y")
+                return str(int(f)) if f == int(f) else str(f)
+            return str(x)[:30]
+
+        if MAX_UPD and len(atualiza) > MAX_UPD:
+            log.warning("Cirurgias: %s pendentes, processando %s", len(atualiza), MAX_UPD)
+            atualiza = atualiza[:MAX_UPD]
+        for lin, l, dif, antes in atualiza:
+            det = ", ".join(f"{COLS_CC[i]}: {mostraCC(antes[i] if i < len(antes) else None, i)}"
+                            f" -> {mostraCC(l[i], i)}" for i in dif)
+            if DRYRUN:
+                log.info("  DRY cir linha %s: %s", lin, det); continue
+            g("PATCH", f"{ws}/range(address='A{lin}:F{lin}')", tk,
+              json={"values": [mesclar(antes, l, dif, CC_LARG)]})
+            log.info("  cir linha %s: %s", lin, det[:150])
+        if novas:
+            if DRYRUN:
+                for l in novas[:10]:
+                    log.info("  DRY cir nova: %s | agd %s | %s | %s",
+                             mostraCC(l[0], 0), l[1], str(l[2])[:22], l[4])
+            else:
+                ini = total + 1
+                for k in range(0, len(novas), 50):
+                    bloco = novas[k:k + 50]
+                    a2, b2 = ini + k, ini + k + len(bloco) - 1
+                    g("PATCH", f"{ws}/range(address='A{a2}:F{b2}')", tk,
+                      json={"values": bloco})
+                    log.info("  cir gravadas %s/%s", min(k + 50, len(novas)), len(novas))
+    finally:
+        SESSAO["id"] = guard
+
+
+def toNumF(x):
+    try:
+        return float(str(x).replace(".", "").replace(",", ".")) if isinstance(x, str) else float(x)
+    except Exception:
+        return ""
+
+
+def _share_id(url):
+    b = base64.b64encode(url.encode("utf-8")).decode().rstrip("=")
+    return "u!" + b.replace("/", "_").replace("+", "-")
+
+
+def resolver_arquivo_url(tk, url):
+    it = g("GET", f"{GRAPH}/shares/{_share_id(url)}/driveItem?$select=id,name,parentReference", tk)
+    return {"drive": it["parentReference"]["driveId"], "item": it["id"], "nome": it.get("name")}
+
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 def main():
     log.info("Config: drive=%s... file_id=%s path=%s", DRIVE_ID[:12], FILE_ID or "(vazio)", FILE_PATH)
@@ -1654,6 +1853,13 @@ def main():
         return
     if FG_PROC:
         fg_procedimentos()
+        return
+    if FG_CIRD:
+        cirurgias_diag(); return
+    if FG_CIR:
+        tk0 = token(); resolver_arquivo(tk0)
+        try: sincronizar_cirurgias(tk0)
+        finally: pass
         return
     if FG_AGENDA:
         tk0 = token(); resolver_arquivo(tk0); abrir_sessao(tk0)
@@ -1868,6 +2074,9 @@ def main():
     if FG_TOKEN:
         try: sincronizar_marcacoes(tk)
         except Exception as e: log.error("Marcacoes/Feegow falhou: %s", str(e)[:200])
+    if FG_TOKEN and ARQ_CIR:
+        try: sincronizar_cirurgias(tk)
+        except Exception as e: log.error("Cirurgias falhou: %s", str(e)[:200])
     fechar_sessao(tk)
     log.info("OK — %s linhas inseridas", len(inserir_agora))
 
