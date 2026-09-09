@@ -202,7 +202,7 @@ CIR_NOME  = os.environ.get("CIRURGIA_NOME_CONTEM", "CIRURGIA")
 CIR_STATUS = os.environ.get("CIRURGIA_STATUS",
     "Aguardando,Chamando,Marcado - não confirmado,Aguardando pagamento,"
     "Atendido,Em atendimento,Marcado - confirmado")
-CIR_DE  = os.environ.get("CIRURGIA_DE", "")            # vazio = 1o de janeiro do ano corrente
+CIR_DE  = os.environ.get("CIRURGIA_DE", "01-09-2026")  # o passado nao muda mais
 CIR_ATE = os.environ.get("CIRURGIA_ATE", "31-12-2026")
 # colunas: DATA | ID AGENDAMENTO | PROCEDIMENTO | ID FEEGOW | SITUACAO | VALOR
 CC = {"data": 0, "idAgd": 1, "proc": 2, "idPac": 3, "situacao": 4, "valor": 5}
@@ -304,17 +304,31 @@ def cirurgias_diag():
     log.info("Janelas de busca (limite de 6 meses da API):")
     for a, b in fg_janelas(de, ate):
         log.info("   %s a %s", a.strftime("%d-%m-%Y"), b.strftime("%d-%m-%Y"))
-    itens = fg_buscar_cirurgias(alvo, de, min(ate, de + dt.timedelta(days=40)))
-    log.info("--- exemplo cru de agendamento de cirurgia ---")
-    for it in itens[:2]:
-        log.info("  %s", _j.dumps(it, ensure_ascii=False)[:700])
+    # o que existe de fato na agenda, por procedimento
+    a0, b0 = de, min(ate, de + dt.timedelta(days=40))
+    todos = _pagina({"data_start": a0.strftime("%d-%m-%Y"), "data_end": b0.strftime("%d-%m-%Y"),
+                     "list_procedures": 1})
+    log.info("--- agendamentos de %s a %s: %s no total ---",
+             a0.strftime("%d/%m"), b0.strftime("%d/%m"), len(todos))
+    cont = {}
+    for x in todos:
+        k = str(x.get("procedimento_id") or "(sem procedimento_id)")
+        cont[k] = cont.get(k, 0) + 1
+    log.info("distribuicao por procedimento_id:")
+    for k, n in sorted(cont.items(), key=lambda x: -x[1])[:20]:
+        log.info("   %-8s %-46s %s", k, mapa.get(k, "(fora do cadastro)")[:46], n)
+    if todos:
+        chaves = sorted({k for x in todos for k in x.keys()})
+        log.info("campos do agendamento: %s", ", ".join(chaves))
+        val = [k for k in chaves if "valor" in k.lower() or "preco" in k.lower()]
+        log.info("campos de valor: %s", val or "NENHUM")
+        ex = next((x for x in todos if x.get("procedimentos")), todos[0])
+        log.info("exemplo cru: %s", _j.dumps(ex, ensure_ascii=False)[:700])
+    itens = fg_buscar_cirurgias(alvo, a0, b0)
+    log.info("--- casando com os IDs configurados %s: %s encontrada(s) ---", sorted(alvo), len(itens))
     if not itens:
-        log.warning("Nenhum agendamento retornado para o procedimento %s", sorted(alvo)[0])
-    else:
-        chaves = sorted({k for it in itens for k in it.keys()})
-        log.info("campos disponiveis: %s", ", ".join(chaves))
-        temValor = [k for k in chaves if "valor" in k.lower() or "preco" in k.lower()]
-        log.info("campos de valor: %s", temValor or "NENHUM")
+        log.warning("Nenhuma casou. Escolha o ID certo na distribuicao acima e"
+                    " coloque em CIRURGIA_PROCEDIMENTOS.")
 
 
 # ─── aba Prevendas ────────────────────────────────────────────────────────────
