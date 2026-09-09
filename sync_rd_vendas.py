@@ -1835,8 +1835,9 @@ def sincronizar_cirurgias(tk):
             pid2 = str(a.get("paciente_id") or "")
             linha[CC["idPac"]] = int(pid2) if pid2.isdigit() else pid2
             linha[CC["situacao"]] = st
-            val = a.get("valor") or a.get("valor_total") or a.get("preco")
-            linha[CC["valor"]] = toNumF(val) if val not in (None, "") else ""
+            v1 = toNumF(a.get("valor"))
+            v2 = toNumF(a.get("valor_total_agendamento"))
+            linha[CC["valor"]] = v1 if isinstance(v1, float) and v1 else (v2 if isinstance(v2, float) and v2 else "")
             if existente is None:
                 novas.append(linha); continue
             lin, atual = existente
@@ -1900,8 +1901,18 @@ def sincronizar_cirurgias(tk):
 
 
 def toNumF(x):
+    """Aceita 'R$ 1.500,50', '1500.5', 1500.5 — devolve float ou string vazia."""
+    if x in (None, ""):
+        return ""
+    if isinstance(x, (int, float)):
+        return float(x)
+    t = re.sub(r"[^\d,.-]", "", str(x))
+    if not t or t in ("-", ".", ","):
+        return ""
+    if "," in t:
+        t = t.replace(".", "").replace(",", ".")
     try:
-        return float(str(x).replace(".", "").replace(",", ".")) if isinstance(x, str) else float(x)
+        return float(t)
     except Exception:
         return ""
 
