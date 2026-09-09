@@ -197,7 +197,7 @@ def fg_procedimentos():
 # ─── planilha de Cirurgias (arquivo separado) ─────────────────────────────────
 ARQ_CIR   = os.environ.get("ARQ_CIRURGIAS", "")
 SHEET_CIR = os.environ.get("SHEET_CIRURGIAS", "Cirurgias")
-CIR_PROCS = [x.strip() for x in os.environ.get("CIRURGIA_PROCEDIMENTOS", "").split(",") if x.strip()]
+CIR_PROCS = [x.strip() for x in os.environ.get("CIRURGIA_PROCEDIMENTOS", "8").split(",") if x.strip()]
 CIR_NOME  = os.environ.get("CIRURGIA_NOME_CONTEM", "CIRURGIA")
 CIR_STATUS = os.environ.get("CIRURGIA_STATUS",
     "Aguardando,Chamando,Marcado - não confirmado,Aguardando pagamento,"
@@ -209,6 +209,42 @@ CC = {"data": 0, "idAgd": 1, "proc": 2, "idPac": 3, "situacao": 4, "valor": 5}
 CC_LARG = 6
 
 
+FG_JANELA_DIAS = int(os.environ.get("FEEGOW_JANELA_DIAS", "150"))   # a API recusa >= 6 meses
+
+
+def fg_janelas(de, ate):
+    """Divide o intervalo em pedacos aceitos pela API (< 6 meses)."""
+    out, ini = [], de
+    while ini <= ate:
+        fim = min(ate, ini + dt.timedelta(days=FG_JANELA_DIAS - 1))
+        out.append((ini, fim))
+        ini = fim + dt.timedelta(days=1)
+    return out
+
+
+def fg_buscar_proc(pid, de, ate):
+    """Todos os agendamentos de um procedimento no intervalo, respeitando o limite."""
+    todos, vistos = [], set()
+    for a, b in fg_janelas(de, ate):
+        start = 0
+        while start < 20000:
+            j = fg_get("/appoints/search", {"data_start": a.strftime("%d-%m-%Y"),
+                                            "data_end": b.strftime("%d-%m-%Y"),
+                                            "procedimento_id": pid,
+                                            "start": start, "offset": 200})
+            lote = fg_conteudo(j)
+            if not lote:
+                break
+            for x in lote:
+                k = str(x.get("agendamento_id") or "")
+                if k and k not in vistos:
+                    vistos.add(k); todos.append(x)
+            if len(lote) < 200:
+                break
+            start += 200
+    return todos
+
+
 def cir_procedimentos_alvo():
     """IDs de procedimento considerados cirurgia: lista fixa ou nome contendo o termo."""
     if CIR_PROCS:
@@ -216,6 +252,17 @@ def cir_procedimentos_alvo():
     mapa = fg_mapa("/procedures/list", "procedimento_id", "nome")
     alvo = {pid for pid, nome in mapa.items() if CIR_NOME and CIR_NOME.upper() in norm(nome)}
     return alvo, mapa
+
+
+def cir_intervalo():
+    def pd(x, padrao):
+        try:
+            d, m, a = str(x).split("-"); return dt.date(int(a), int(m), int(d))
+        except Exception:
+            return padrao
+    de = pd(CIR_DE, dt.date(dt.date.today().year, 1, 1))
+    ate = pd(CIR_ATE, dt.date(dt.date.today().year, 12, 31))
+    return de, ate
 
 
 def cirurgias_diag():
@@ -233,15 +280,21 @@ def cirurgias_diag():
         for pid, nome in sorted(mapa.items(), key=lambda x: x[1]):
             log.info("       %-6s %s", pid, nome[:60])
         return
-    de = CIR_DE or f"01-01-{dt.date.today().year}"
-    j = fg_get("/appoints/search", {"data_start": de, "data_end": CIR_ATE,
-                                    "procedimento_id": sorted(alvo)[0], "offset": 3})
-    itens = fg_conteudo(j)
+    de, ate = cir_intervalo()
+    log.info("Janelas de busca (limite de 6 meses da API):")
+    for a, b in fg_janelas(de, ate):
+        log.info("   %s a %s", a.strftime("%d-%m-%Y"), b.strftime("%d-%m-%Y"))
+    itens = fg_buscar_proc(sorted(alvo)[0], de, min(ate, de + dt.timedelta(days=40)))
     log.info("--- exemplo cru de agendamento de cirurgia ---")
     for it in itens[:2]:
         log.info("  %s", _j.dumps(it, ensure_ascii=False)[:700])
     if not itens:
         log.warning("Nenhum agendamento retornado para o procedimento %s", sorted(alvo)[0])
+    else:
+        chaves = sorted({k for it in itens for k in it.keys()})
+        log.info("campos disponiveis: %s", ", ".join(chaves))
+        temValor = [k for k in chaves if "valor" in k.lower() or "preco" in k.lower()]
+        log.info("campos de valor: %s", temValor or "NENHUM")
 
 
 # ─── aba Prevendas ────────────────────────────────────────────────────────────
@@ -1729,25 +1782,14 @@ def sincronizar_cirurgias(tk):
             return
         status = fg_mapa("/appoints/status", "id", "status")
         okSt = {norm(x) for x in CIR_STATUS.split(",") if x.strip()}
-        de = CIR_DE or f"01-01-{dt.date.today().year}"
-        log.info("Procedimentos de cirurgia: %s | janela %s a %s", sorted(alvo), de, CIR_ATE)
-
+        de, ate = cir_intervalo()
+        log.info("Procedimentos de cirurgia: %s | janela %s a %s", sorted(alvo), de, ate)
         agenda, vistos = [], set()
         for pid in sorted(alvo):
-            start = 0
-            while start < 20000:
-                j = fg_get("/appoints/search", {"data_start": de, "data_end": CIR_ATE,
-                                                "procedimento_id": pid, "start": start, "offset": 200})
-                lote = fg_conteudo(j)
-                if not lote:
-                    break
-                for a in lote:
-                    aid = str(a.get("agendamento_id") or "")
-                    if aid and aid not in vistos:
-                        vistos.add(aid); agenda.append(a)
-                if len(lote) < 200:
-                    break
-                start += 200
+            for a in fg_buscar_proc(pid, de, ate):
+                aid = str(a.get("agendamento_id") or "")
+                if aid and aid not in vistos:
+                    vistos.add(aid); agenda.append(a)
         log.info("Feegow: %s agendamento(s) de cirurgia", len(agenda))
 
         novas, atualiza, fora = [], [], 0
