@@ -107,7 +107,8 @@ jobs:
           # --- planilha de Cirurgias (arquivo separado) ---
           ARQ_CIRURGIAS:         "https://rejuvenesce.sharepoint.com/sites/ClnicaRejuvenesce-Comercial/Documentos%20Compartilhados/Cirurgias.xlsx"
           SHEET_CIRURGIAS:       "Cirurgias"
-          CIRURGIA_PROCEDIMENTOS: ""        # IDs fixos; vazio usa o termo abaixo
+          CIRURGIA_PROCEDIMENTOS: "8"       # 8 = Cirurgia (confirmado no diagnostico)
+          FEEGOW_JANELA_DIAS:    "150"      # a API recusa intervalos de 6 meses ou mais
           CIRURGIA_NOME_CONTEM:  "CIRURGIA"
           CIRURGIA_STATUS:       "Aguardando,Chamando,Marcado - não confirmado,Aguardando pagamento,Atendido,Em atendimento,Marcado - confirmado"
           CIRURGIA_DE:           ""         # vazio = 01-01 do ano corrente
