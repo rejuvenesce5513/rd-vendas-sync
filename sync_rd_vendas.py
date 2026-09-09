@@ -222,26 +222,46 @@ def fg_janelas(de, ate):
     return out
 
 
-def fg_buscar_proc(pid, de, ate):
-    """Todos os agendamentos de um procedimento no intervalo, respeitando o limite."""
+def _pagina(params):
+    saida, start = [], 0
+    while start < 30000:
+        j = fg_get("/appoints/search", dict(params, start=start, offset=200))
+        lote = fg_conteudo(j)
+        if not lote:
+            break
+        saida.extend(lote)
+        if len(lote) < 200:
+            break
+        start += 200
+    return saida
+
+
+def fg_buscar_cirurgias(alvo, de, ate):
+    """Tenta o filtro de procedimento na origem; se vier vazio, varre tudo e filtra aqui."""
     todos, vistos = [], set()
+    filtroOK = None
     for a, b in fg_janelas(de, ate):
-        start = 0
-        while start < 20000:
-            j = fg_get("/appoints/search", {"data_start": a.strftime("%d-%m-%Y"),
-                                            "data_end": b.strftime("%d-%m-%Y"),
-                                            "procedimento_id": pid,
-                                            "start": start, "offset": 200})
-            lote = fg_conteudo(j)
-            if not lote:
-                break
-            for x in lote:
-                k = str(x.get("agendamento_id") or "")
-                if k and k not in vistos:
-                    vistos.add(k); todos.append(x)
-            if len(lote) < 200:
-                break
-            start += 200
+        base = {"data_start": a.strftime("%d-%m-%Y"), "data_end": b.strftime("%d-%m-%Y"),
+                "list_procedures": 1}
+        lote = []
+        if filtroOK is not False:
+            for pid in sorted(alvo):
+                lote += _pagina(dict(base, procedimento_id=pid))
+            if lote and filtroOK is None:
+                filtroOK = True
+                log.info("  filtro de procedimento aceito na origem")
+        if not lote:
+            if filtroOK is None:
+                log.info("  filtro de procedimento ignorado pela API — varrendo e filtrando aqui")
+            filtroOK = False
+            lote = [x for x in _pagina(base)
+                    if str(x.get("procedimento_id") or "") in alvo]
+        for x in lote:
+            k = str(x.get("agendamento_id") or "")
+            if k and k not in vistos:
+                vistos.add(k); todos.append(x)
+        log.info("  %s a %s: %s cirurgia(s) | acumulado %s",
+                 a.strftime("%d/%m"), b.strftime("%d/%m"), len(lote), len(todos))
     return todos
 
 
@@ -284,7 +304,7 @@ def cirurgias_diag():
     log.info("Janelas de busca (limite de 6 meses da API):")
     for a, b in fg_janelas(de, ate):
         log.info("   %s a %s", a.strftime("%d-%m-%Y"), b.strftime("%d-%m-%Y"))
-    itens = fg_buscar_proc(sorted(alvo)[0], de, min(ate, de + dt.timedelta(days=40)))
+    itens = fg_buscar_cirurgias(alvo, de, min(ate, de + dt.timedelta(days=40)))
     log.info("--- exemplo cru de agendamento de cirurgia ---")
     for it in itens[:2]:
         log.info("  %s", _j.dumps(it, ensure_ascii=False)[:700])
@@ -1784,12 +1804,7 @@ def sincronizar_cirurgias(tk):
         okSt = {norm(x) for x in CIR_STATUS.split(",") if x.strip()}
         de, ate = cir_intervalo()
         log.info("Procedimentos de cirurgia: %s | janela %s a %s", sorted(alvo), de, ate)
-        agenda, vistos = [], set()
-        for pid in sorted(alvo):
-            for a in fg_buscar_proc(pid, de, ate):
-                aid = str(a.get("agendamento_id") or "")
-                if aid and aid not in vistos:
-                    vistos.add(aid); agenda.append(a)
+        agenda = fg_buscar_cirurgias(alvo, de, ate)
         log.info("Feegow: %s agendamento(s) de cirurgia", len(agenda))
 
         novas, atualiza, fora = [], [], 0
