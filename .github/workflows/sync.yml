@@ -111,8 +111,10 @@ jobs:
           FEEGOW_JANELA_DIAS:    "150"      # a API recusa intervalos de 6 meses ou mais
           CIRURGIA_NOME_CONTEM:  "CIRURGIA"
           CIRURGIA_STATUS:       "Aguardando,Chamando,Marcado - não confirmado,Aguardando pagamento,Atendido,Em atendimento,Marcado - confirmado"
-          CIRURGIA_DE:           "01-09-2026"   # o passado nao muda mais
-          CIRURGIA_ATE:          "31-12-2026"
+          CIRURGIA_DE:           ""         # vazio = janela movel (hoje - dias tras)
+          CIRURGIA_ATE:          ""         # vazio = janela movel (hoje + dias frente)
+          CIRURGIA_DIAS_TRAS:    "30"
+          CIRURGIA_DIAS_FRENTE:  "180"
 
           FEEGOW_DE:             "2026-06-01"   # backfill: inicio (inclusivo)
           FEEGOW_ATE:            "2026-08-01"   # backfill: fim (exclusivo)
