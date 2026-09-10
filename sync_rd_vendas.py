@@ -202,8 +202,11 @@ CIR_NOME  = os.environ.get("CIRURGIA_NOME_CONTEM", "CIRURGIA")
 CIR_STATUS = os.environ.get("CIRURGIA_STATUS",
     "Aguardando,Chamando,Marcado - não confirmado,Aguardando pagamento,"
     "Atendido,Em atendimento,Marcado - confirmado")
-CIR_DE  = os.environ.get("CIRURGIA_DE", "01-09-2026")  # o passado nao muda mais
-CIR_ATE = os.environ.get("CIRURGIA_ATE", "31-12-2026")
+# janela movel: o passado nao muda, entao olhamos pouco para tras e 180 dias a frente
+CIR_DE   = os.environ.get("CIRURGIA_DE", "")            # vazio = hoje - CIRURGIA_DIAS_TRAS
+CIR_ATE  = os.environ.get("CIRURGIA_ATE", "")           # vazio = hoje + CIRURGIA_DIAS_FRENTE
+CIR_TRAS   = int(os.environ.get("CIRURGIA_DIAS_TRAS", "30"))
+CIR_FRENTE = int(os.environ.get("CIRURGIA_DIAS_FRENTE", "180"))
 # colunas: DATA | ID AGENDAMENTO | PROCEDIMENTO | ID FEEGOW | SITUACAO | VALOR
 CC = {"data": 0, "idAgd": 1, "proc": 2, "idPac": 3, "situacao": 4, "valor": 5}
 CC_LARG = 6
@@ -275,13 +278,17 @@ def cir_procedimentos_alvo():
 
 
 def cir_intervalo():
+    """Janela movel por padrao; datas fixas so se informadas em CIRURGIA_DE / _ATE."""
+    hoje = dt.date.today()
     def pd(x, padrao):
+        if not str(x).strip():
+            return padrao
         try:
             d, m, a = str(x).split("-"); return dt.date(int(a), int(m), int(d))
         except Exception:
             return padrao
-    de = pd(CIR_DE, dt.date(dt.date.today().year, 1, 1))
-    ate = pd(CIR_ATE, dt.date(dt.date.today().year, 12, 31))
+    de = pd(CIR_DE, hoje - dt.timedelta(days=CIR_TRAS))
+    ate = pd(CIR_ATE, hoje + dt.timedelta(days=CIR_FRENTE))
     return de, ate
 
 
