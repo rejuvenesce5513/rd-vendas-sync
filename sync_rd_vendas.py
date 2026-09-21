@@ -2069,12 +2069,24 @@ def main():
                     len(atualizar), MAX_UPD)
         atualizar = atualizar[:MAX_UPD]
     ids_rd = {l[I_ID] for l in novas if l[I_ID]}
+    # Sem filtro pela etapa ja gravada: linha marcada num ciclo anterior (PERDIDO,
+    # FOLLOW UP, REABERTO NO RD) deixa de casar com STAGE_MATCH e, com o filtro,
+    # sumia do radar para sempre — mesmo que o deal voltasse a mudar no RD.
     candidatas = [(rid, lin, v) for rid, (lin, v) in por_id.items()
-                  if rid and rid not in ids_rd
-                  and any(t in norm(v[1] if len(v) > 1 else "") for t in etapas_venda())]
+                  if rid and rid not in ids_rd]
     if candidatas:
         log.info("Conferindo no RD %s linha(s) que sumiram da consulta...", len(candidatas))
     revertidas = []
+
+    def marcar(rid, lin, v, novo_st):
+        """Enfileira so se a coluna B for mudar de fato. Sem isso, agora que as linhas
+        ja marcadas voltaram a ser reconferidas, a mesma celula seria regravada com o
+        mesmo valor a cada 15 minutos."""
+        atual_b = v[1] if len(v) > 1 else ""
+        if norm(atual_b) == norm(novo_st):
+            return
+        revertidas.append((rid, lin, v[0], novo_st))
+
     for rid, lin, v in candidatas[:40]:
         d = buscar_deal(rid)
         if d is None:
@@ -2082,24 +2094,31 @@ def main():
                         lin, str(v[0])[:34])
             continue
         if d == "404":
-            revertidas.append((lin, v[0], "EXCLUIDO NO RD"))
+            marcar(rid, lin, v, "EXCLUIDO NO RD")
             continue
         if d.get("win") is False:
             # perdido: nunca gravar o nome da etapa, que pode ser uma etapa de venda
-            revertidas.append((lin, v[0], "PERDIDO"))
+            marcar(rid, lin, v, "PERDIDO")
+        elif d.get("win") is not True:
+            # reaberto: win deixou de ser true sem virar false. A etapa pode continuar
+            # casando com STAGE_MATCH (ex.: parado em "Finalizado"), entao o teste de
+            # etapa abaixo nao pegaria e a linha seguiria contando como venda.
+            marcar(rid, lin, v, "REABERTO NO RD")
         elif not etapa_de_venda(d):
-            revertidas.append((lin, v[0], (nome_etapa(d) or "REVERTIDO NO RD").upper()))
+            marcar(rid, lin, v, (nome_etapa(d) or "REVERTIDO NO RD").upper())
         # caso contrario continua sendo venda (data mudou, etc) — nao mexe
 
     if revertidas:
         log.warning("%s venda(s) deixaram de valer no RD:", len(revertidas))
         ws2 = f"{WB}/worksheets('{SHEET}')"
-        for lin, nome, novo_st in revertidas:
+        for rid, lin, nome, novo_st in revertidas:
             if DRYRUN or not MARCAR_REV:
-                log.warning("   DRY linha %s (%s) -> Etapa '%s'", lin, str(nome)[:34], novo_st)
+                log.warning("   DRY linha %s [id %s] (%s) -> Etapa '%s'",
+                            lin, rid, str(nome)[:34], novo_st)
             else:
                 g("PATCH", f"{ws2}/range(address='B{lin}')", tk, json={"values": [[novo_st]]})
-                log.warning("   linha %s (%s) -> Etapa '%s' — fora do total", lin, str(nome)[:34], novo_st)
+                log.warning("   linha %s [id %s] (%s) -> Etapa '%s' — fora do total",
+                            lin, rid, str(nome)[:34], novo_st)
 
     log.info("Novas: %s | atualizacoes: %s", len(inserir_agora), len(atualizar))
 
