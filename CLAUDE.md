@@ -117,3 +117,11 @@ carga inicial, mas um ciclo chegou a 35 minutos — e o cron dispara a cada 15. 
 - Quatro pacientes com duas negociações ganhas e o mesmo ID Feegow — pode ser venda em
   duas partes ou duplicidade de CRM; não foi apurado
 - Aba `Campanha` com `#REF!`, não tratada
+
+## Regras obrigatorias
+
+- Nunca commitar nem fazer push sem autorizacao explicita minha.
+- Qualquer alteracao em .github/workflows/sync.yml deve ser apresentada linha a linha antes: as variaveis de ambiente ali definem posicoes de coluna e cutoffs de data da planilha de producao.
+- Nunca criar arquivo .env nem sugerir rodar o script localmente com credenciais reais.
+- Apos alterar sync_rd_vendas.py, o teste e o modo dry-run correspondente pelo GitHub Actions, nunca local.
+- Uma alteracao por vez.
