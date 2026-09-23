@@ -1142,6 +1142,20 @@ def chave_sem_nome(v):
         return None
 
 
+def fechou_na_janela(v):
+    """Data de fechamento (coluna E) a partir do CUTOFF. O cabecalho deste arquivo diz
+    que nada anterior ao CUTOFF e tocado; linhas historicas com ID gravado ficam de
+    fora da reversao pelo mesmo motivo."""
+    try:
+        e = v[4]
+        if e in (None, ""):
+            return False
+        d = e if isinstance(e, dt.date) else EPOCH + dt.timedelta(days=int(float(e)))
+        return d >= CUTOFF
+    except Exception:
+        return False
+
+
 def valor_de(v):
     try:
         return round(float(v[2] or 0), 2)
@@ -2072,8 +2086,14 @@ def main():
     # Sem filtro pela etapa ja gravada: linha marcada num ciclo anterior (PERDIDO,
     # FOLLOW UP, REABERTO NO RD) deixa de casar com STAGE_MATCH e, com o filtro,
     # sumia do radar para sempre — mesmo que o deal voltasse a mudar no RD.
-    candidatas = [(rid, lin, v) for rid, (lin, v) in por_id.items()
-                  if rid and rid not in ids_rd]
+    # Mas o recorte de data e obrigatorio: a planilha tem milhares de linhas antigas
+    # com ID gravado, e sem ele a reversao varreria toda a historia sobrescrevendo B.
+    com_id = [(rid, lin, v) for rid, (lin, v) in por_id.items()
+              if rid and rid not in ids_rd]
+    candidatas = [c for c in com_id if fechou_na_janela(c[2])]
+    if com_id:
+        log.info("Fora da consulta: %s linha(s) com ID | %s dentro da janela desde %s",
+                 len(com_id), len(candidatas), CUTOFF)
     if candidatas:
         log.info("Conferindo no RD %s linha(s) que sumiram da consulta...", len(candidatas))
     revertidas = []
