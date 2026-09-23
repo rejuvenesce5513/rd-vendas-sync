@@ -89,7 +89,16 @@ COL_FEE_L = os.environ.get("COL_FEEGOW", "").strip().upper()      # vazio = nao 
 I_FEE     = (ord(COL_FEE_L) - 65) if COL_FEE_L else -1
 CF_FEEGOW = os.environ.get("CF_ID_FEEGOW", "6a6b5afb84ec2f001de5df5a")
 
-LARGURA = max(I_ID, I_CIR, I_MARC, I_FEE) + 1
+# Entrada: valor e forma de pagamento. Letra vazia = coluna nao e lida nem gravada,
+# mesmo criterio do COL_FEEGOW. Sem o id do campo no RD tambem nao grava nada.
+COL_ENT_V_L = os.environ.get("COL_ENTRADA_VALOR", "").strip().upper()
+COL_ENT_F_L = os.environ.get("COL_ENTRADA_FORMA", "").strip().upper()
+CF_ENT_V    = os.environ.get("CF_ENTRADA_VALOR", "").strip()
+CF_ENT_F    = os.environ.get("CF_ENTRADA_FORMA", "").strip()
+I_ENT_V = _idx(COL_ENT_V_L) if (COL_ENT_V_L and CF_ENT_V) else -1
+I_ENT_F = _idx(COL_ENT_F_L) if (COL_ENT_F_L and CF_ENT_F) else -1
+
+LARGURA = max(I_ID, I_CIR, I_MARC, I_FEE, I_ENT_V, I_ENT_F) + 1
 
 # ─── Feegow: aba Marcacoes ────────────────────────────────────────────────────
 FG_TOKEN  = os.environ.get("FEEGOW_TOKEN", "")
@@ -359,7 +368,10 @@ CF_PV = {
     "dataAval":  os.environ.get("CF_PV_DATA_AVAL", "691e0f68034fef0015ca1a3f"),
     "feegow":    os.environ.get("CF_PV_FEEGOW", "6a6b5afb84ec2f001de5df5a"),
 }
-IDX_CMP = list(range(11)) + [I_CIR, I_MARC] + ([I_FEE] if I_FEE >= 0 else [])
+IDX_CMP = (list(range(11)) + [I_CIR, I_MARC]
+           + ([I_FEE] if I_FEE >= 0 else [])
+           + ([I_ENT_V] if I_ENT_V >= 0 else [])
+           + ([I_ENT_F] if I_ENT_F >= 0 else []))
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -973,6 +985,10 @@ def linhas_do_deal(d):
     linha[I_MARC] = cf_value(d, CF["cirurgia_marcada"]) or ""
     if I_FEE >= 0:
         linha[I_FEE] = cf_value(d, CF_FEEGOW) or ""
+    if I_ENT_V >= 0:
+        linha[I_ENT_V] = toNumF(cf_value(d, CF_ENT_V))
+    if I_ENT_F >= 0:
+        linha[I_ENT_F] = cf_value(d, CF_ENT_F) or ""
     return [linha]
 
 
@@ -1208,6 +1224,14 @@ def inserir(tk, linhas, modelo):
         if any(str(x[0] or "").strip() for x in fees):
             g("PATCH", f"{ws}/range(address='{COL_FEE_L}{ini}:{COL_FEE_L}{fim}')", tk,
               json={"values": fees})
+
+    for idx, colL in ((I_ENT_V, COL_ENT_V_L), (I_ENT_F, COL_ENT_F_L)):
+        if idx < 0:
+            continue
+        vals = [[l[idx]] for l in linhas]
+        if any(str(x[0] or "").strip() for x in vals):
+            g("PATCH", f"{ws}/range(address='{colL}{ini}:{colL}{fim}')", tk,
+              json={"values": vals})
 
     for a, b, mod in (modelo or []):
         g("PATCH", f"{ws}/range(address='{a}{ini}:{b}{fim}')", tk,
@@ -2147,6 +2171,10 @@ def main():
             I_CIR: "DataCirurgia", I_MARC: "CirurgiaMarcada"}
     if I_FEE >= 0:
         COLS[I_FEE] = "IDFeegow"
+    if I_ENT_V >= 0:
+        COLS[I_ENT_V] = "EntradaValor"
+    if I_ENT_F >= 0:
+        COLS[I_ENT_F] = "EntradaForma"
     ws = f"{WB}/worksheets('{SHEET}')"
     def mostra(x):
         if x is None or x == "":
@@ -2177,6 +2205,10 @@ def main():
         if I_FEE >= 0 and I_FEE in dif:
             g("PATCH", f"{ws}/range(address='{COL_FEE_L}{linha}')", tk,
               json={"values": [[l[I_FEE]]]})
+        for idx, colL in ((I_ENT_V, COL_ENT_V_L), (I_ENT_F, COL_ENT_F_L)):
+            if idx >= 0 and idx in dif:
+                g("PATCH", f"{ws}/range(address='{colL}{linha}')", tk,
+                  json={"values": [[l[idx]]]})
         log.info("  linha %s [%s] (%s): %s%s", linha, origem, str(l[0])[:26], campos,
                  " +ID" if falta_id else "")
 
