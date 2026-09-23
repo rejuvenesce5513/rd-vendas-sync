@@ -77,8 +77,14 @@ jobs:
           COL_CIRURGIA:          "M"    # Data Prevista de Cirurgia
           COL_CIR_MARCADA:       "N"    # Data Cirurgia foi marcada?
           COL_FEEGOW:            "O"    # ID Feegow — crie o cabecalho em O1 antes
-          LER_ATE:               "O"    # ultima coluna lida
+          LER_ATE:               "R"    # ultima coluna lida
           FORMULA_RANGES:        ""     # nao ha mais colunas calculadas
+
+          # --- entrada (colunas Q e R) ---
+          COL_ENTRADA_VALOR:     "Q"    # Valor Entrada
+          COL_ENTRADA_FORMA:     "R"    # Forma de Pgto Entrada
+          CF_ENTRADA_VALOR:      "69207852d981eb0019072689"
+          CF_ENTRADA_FORMA:      "6920772b8c4ed4001df50f1b"
 
           # --- aba Prevendas ---
           SHEET_PV:              "Prevendas"
