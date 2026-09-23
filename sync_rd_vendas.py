@@ -2213,20 +2213,20 @@ def main():
                  " +ID" if falta_id else "")
 
     if not inserir_agora:
-        fechar_sessao(tk)
-        return
-    if DRYRUN:
+        log.info("Nenhuma linha nova para inserir.")
+    elif DRYRUN:
         for l in inserir_agora[:20]:
             log.info("  DRY %s", l[:8])
-        fechar_sessao(tk)
-        return
+    else:
+        modelo = formulas_modelo(tk)
+        for i in range(0, len(inserir_agora), 20):
+            bloco = inserir_agora[i:i + 20]
+            inserir(tk, bloco, modelo)
+            log.info("  gravadas %s/%s", min(i + 20, len(inserir_agora)), len(inserir_agora))
 
-    modelo = formulas_modelo(tk)
-    for i in range(0, len(inserir_agora), 20):
-        bloco = inserir_agora[i:i + 20]
-        inserir(tk, bloco, modelo)
-        log.info("  gravadas %s/%s", min(i + 20, len(inserir_agora)), len(inserir_agora))
-
+    # Prevendas, Marcacoes e Cirurgias nao dependem de ter havido venda nova. Antes
+    # havia um `return` aqui quando inserir_agora estava vazio — ou seja, na maioria
+    # dos ciclos essas tres abas nunca sincronizavam.
     fechar_sessao(tk)
     if not SEM_PV:
         try: sincronizar_prevendas(tk)
